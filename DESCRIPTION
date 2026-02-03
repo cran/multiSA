@@ -1,0 +1,28 @@
+Package: multiSA
+Title: Multi-Stock Assessment
+Version: 0.1.0
+Authors@R: 
+    person("Quang", "Huynh", , "quang@bluematterscience.com", role = c("aut", "cre"),
+           comment = c(ORCID = "0000-0001-7835-4376"))
+Date: 2026-01-16
+Maintainer: Quang Huynh <quang@bluematterscience.com>
+Description: Implementation of a next-generation, multi-stock age-structured fisheries assessment model. 
+  'multiSA' is intended for use in mixed fisheries where stock composition can not be readily identified in 
+  fishery data alone, e.g., from catch and age/length composition. Models can be fitted to genetic data, 
+  e.g., stock composition of catches and close-kin pairs, with seasonal stock availability and movement.
+License: GPL (>= 3)
+Depends: R (>= 3.5.0)
+Imports: dplyr, gplots, graphics, methods, pbapply, reshape2,
+        rmarkdown, snowfall, stats, tinyplot, RTMB (>= 1.7), TMB, utils
+Suggests: numDeriv, RTMBdist, usethis
+LazyLoad: yes
+Encoding: UTF-8
+RoxygenNote: 7.3.3
+URL: https://blue-matter.github.io/multiSA/,
+        https://github.com/Blue-Matter/multiSA
+BugReports: https://github.com/Blue-Matter/multiSA/issues
+NeedsCompilation: no
+Packaged: 2026-01-29 23:31:49 UTC; quang
+Author: Quang Huynh [aut, cre] (ORCID: <https://orcid.org/0000-0001-7835-4376>)
+Repository: CRAN
+Date/Publication: 2026-02-03 12:40:13 UTC

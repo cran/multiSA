@@ -1,0 +1,103 @@
+
+---
+title: "multiSA assessment summary"
+subtitle: Tables and Figures
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    highlight: rstudio
+    df_print: paged
+---
+
+<style type="text/css">
+h1 { /* Header 1 */
+  font-size: 24px;
+}
+</style>
+
+```{r setup, include = FALSE, echo = FALSE}
+library(dplyr)
+knitr::opts_chunk$set(
+  collapse = TRUE, echo = FALSE, message = FALSE,
+  fig.width = 6, fig.height = 4.5, out.width = "650px", comment = "#>"
+)
+```
+
+# NAME {.tabset}
+
+## Parameters
+
+```{r print-summary}
+Summary <- utils::capture.output(x)
+as.data.frame(Summary)
+```
+
+### Parameter estimates 
+
+```{r sdreport}
+if (length(x@SD) > 1) summary(x, select = c("fixed", "random")) %>% round(4) %>% as.data.frame()
+```
+
+
+### Derived quantities
+
+```{r sdreport-derived}
+if (length(x@SD) > 1) summary(x, select = "report") %>% round(4) %>% as.data.frame()
+```
+
+### Correlation
+
+```{r sdcorr}
+if (length(x@SD) > 1 && length(x@SD$env$corr.fixed)) as.data.frame(x@SD$env$corr.fixed)
+```
+
+<!-- *ADD HESSIAN RMD* -->
+
+## Fishery {.tabset}
+
+<!-- *ADD FISHERY RMD* -->
+
+<!-- *ADD SURVEY RMD* -->
+
+<!-- *ADD SC RMD* -->
+
+<!-- *ADD CK RMD* -->
+
+<!-- *ADD TAG MOV RMD* -->
+
+## Stock dynamics {.tabset}
+
+### Summary
+
+```{r SB, fig.cap="Spawning output."}
+plot_S(x, by = "region")
+```
+
+```{r B, fig.cap="Total biomass."}
+plot_B(x, by = "region")
+```
+
+```{r FF, fig.cap="Instantaneous fishing mortality (per year)."}
+plot_Fstock(x)
+```
+
+```{r R, fig.cap="Recruitment."}
+plot_R(x)
+```
+
+```{r recdist, fig.cap="Distribution of recruitment by region per stock."}
+plot_recdist(x)
+```
+
+<!-- *ADD IND STOCK RMD* -->
+
+<!-- *ADD STOCK REGION RMD* -->
+
+<!-- *ADD MOVEMENT RMD* -->
+
+
+## About
+
+This report was generated on: `r Sys.time()`<br />
+multiSA version `r packageVersion("multiSA")`<br />
+`r R.version.string`

@@ -1,0 +1,366 @@
+
+#' Multi-fleet, multi-area, multi-stock population dynamics model
+#'
+#' Project age-structured populations forward in time. Also used by `[calc_phi_project()]` to calculate
+#' equilibrium abundance and biomass for which there is no analytic solution
+#' due to seasonal movement.
+#'
+#' @param ny Integer, number of years for the projection
+#' @param nm Integer, number of seasons
+#' @param initN_ars Abundance in the first year, first season. Array `[a, r, s]`
+#' @param mov_ymarrs Movement array `[y, m, a, r, r, s]`. If missing, uses a diagonal matrix (no movement among areas).
+#' @param M_yas Natural mortality (per year). Array `[y, a, s]`
+#' @param SRR_s Character vector by `s` for the stock recruit relationship. See [calc_recruitment()] for options
+#' @param sralpha_s Numeric vector by `s` for the stock recruit alpha parameter
+#' @param srbeta_s Numeric vector by `s` for the stock recruit beta parameter
+#' @param mat_yas Maturity ogive. Array `[y, a, s]`
+#' @param fec_yas Fecundity schedule (spawning output of mature individuals). Array `[y, a, s]`
+#' @param Rdev_ys Recruitment deviations. Matrix `[y, s]`
+#' @param m_spawn Integer, season of spawning
+#' @param m_advanceage Integer, season at which to advance integer year age classes
+#' @param delta_s Numeric vector by `s`. Fraction of season that elapses when spawning occurs, e.g., midseason spawning when `delta_s = 0.5`.
+#' @param natal_rs Matrix `[r, s]`. The fraction of the mature stock `s` in region `r` that spawns at
+#' time of spawning. See example in [Dstock-class].
+#' @param recdist_rs Matrix `[r, s]`. The fraction of the incoming recruitment of stock `s` that settles in region `r`.
+#' @param fwt_ymafs Fishery weight at age. Array `[y, m, a, f, s]`
+#' @param sel_ymafs Fishery selectivity. Array `[y, m, a, f, s]`
+#' @param condition Whether the fishing mortality is conditioned on the catch or specified F argument.
+#' @param F_ymfr Fishing mortality (per season). Array `[y, m, f, r]`. Only used if `condition = "F"`.
+#' @param Cobs_ymfr Fishery catch (weight). Array `[y, m, f, r]`. Only used if `condition = "catch"` to solve for F (see [calc_F()]).
+#'
+#' @examples
+#' unfished_pop <- calc_population()
+#' @inheritParams calc_F
+#' @return
+#' A named list containing:
+#'
+#' * `N_ymars` Stock abundance
+#' * `F_ymars` Fishing mortality (summed across fleets)
+#' * `F_ymfr` Fishing mortality (by fleet and region)
+#' * `Z_ymars` Total mortality
+#' * `F_ymafrs` Fishing mortality (disaggregated by fleet)
+#' * `CN_ymafrs` Catch at age (abundance)
+#' * `CB_ymfrs` Fishery catch (weight)
+#' * `VB_ymfrs` Vulnerable biomass available to the fishing fleets
+#' * `Nsp_yars` Spawning abundance (in the spawning season)
+#' * `Npsp_yars` Potentail spawners, mature animals in the spawning season that do not spawn if outside natal regions
+#' * `S_yrs` Spawning output
+#' * `R_ys` Recruitment
+#' * `penalty` Numeric quadratic penalty if apical fishing mortality (by fleet) exceeds `Fmax`. See [calc_F()].
+#'
+#' @export
+calc_population <- function(ny = 10, nm = 4, na = 20, nf = 1, nr = 4, ns = 2,
+                            initN_ars = array(1, c(na, nr, ns)),
+                            mov_ymarrs,
+                            M_yas = array(0.3, c(ny, na, ns)),
+                            SRR_s = rep("BH", ns),
+                            sralpha_s = rep(1e16, ns),
+                            srbeta_s = rep(1e16, ns),
+                            mat_yas = array(1, c(ny, na, ns)), fec_yas = array(1, c(ny, na, ns)),
+                            Rdev_ys = matrix(1, ny, ns),
+                            m_spawn = 1, m_advanceage = 1, delta_s = rep(0, ns), natal_rs = matrix(1, nr, ns),
+                            recdist_rs = matrix(1/nr, nr, ns),
+                            fwt_ymafs = array(1, c(ny, nm, na, nf, ns)),
+                            q_fs = matrix(1, nf, ns), sel_ymafs = array(1, c(ny, nm, na, nf, ns)),
+                            condition = c("F", "catch"),
+                            F_ymfr = array(0, c(ny, nm, nf, nr)),
+                            Cobs_ymfr = array(1e-8, c(ny, nm, nf, nr)),
+                            Fmax = 2, nitF = 5L) {
+
+  # Dispatch method for AD variables ----
+  `[<-` <- RTMB::ADoverload("[<-")
+  `c` <- RTMB::ADoverload("c")
+
+  condition <- match.arg(condition)
+
+  # Population array of lists ----
+  delta_m <- 1/nm
+
+  N_ym_ars <- array(list(), c(ny + 1, nm))
+  Npsp_y_ars <- Nsp_y_ars <- array(list(), ny)
+  F_ym_ars <-
+    Z_ym_ars <- array(list(), c(ny, nm))
+
+  S_yrs <- array(NA_real_, c(ny, nr, ns))
+  R_ys <- array(NA_real_, c(ny, ns))
+
+  if (missing(mov_ymarrs)) {
+    mov_ymarrs <- diag(nr) %>% array(c(nr, nr, ny, nm, na, ns)) %>% aperm(c(3:5, 1:2, 6))
+  }
+
+  # Fishery arrays ----
+  if (condition == "catch") {
+    F_ym_fr <- array(list(), c(ny, nm))
+  }
+  F_ym_afrs <-
+    CN_ym_afrs <- array(list(), c(ny, nm))
+  CB_ym_frs <-
+    VB_ym_frs <- array(list(), c(ny, nm))
+
+  # Penalty for exceeding Fmax (if conditioning on catch)
+  penalty <- 0
+
+  N_ym_ars[[1, 1]] <- initN_ars
+
+  # Loops over years and seasons ----
+  for(y in 1:ny) {
+    for(m in 1:nm) {
+      ## This season's mortality ----
+      if (condition == "catch") {
+        Fsearch <- calc_F(
+          Cobs = Cobs_ymfr[y, m, , ], N = N_ym_ars[[y, m]], sel = sel_ymafs[y, m, , , ],
+          wt = fwt_ymafs[y, m, , , ], M = M_yas[y, , ], q_fs = q_fs, delta = delta_m,
+          na = na, nr = nr, nf = nf, ns = ns, Fmax = Fmax, nitF = nitF, trans = "log"
+        )
+        penalty <- penalty + Fsearch[["penalty"]] # Report penalty for exceeding Fmax
+
+        F_ym_afrs[[y, m]] <- Fsearch[["F_afrs"]]
+        F_ym_ars[[y, m]] <- Fsearch[["F_ars"]]
+        Z_ym_ars[[y, m]] <- Fsearch[["Z_ars"]]
+        F_ym_fr[[y, m]] <- Fsearch[["F_index"]]
+
+        ## This season's fishery catch, vulnerable biomass, and total biomass ----
+        CN_ym_afrs[[y, m]] <- Fsearch[["CN_afrs"]]
+        CB_ym_frs[[y, m]] <- Fsearch[["CB_frs"]]
+        VB_ym_frs[[y, m]] <- array(0, c(nf, nr, ns))
+        for (a in 1:na) {
+          VB_ym_frs[[y, m]] <- VB_ym_frs[[y, m]] + array(Fsearch[["VB_afrs"]][a, , , ], c(nf, nr, ns))
+        }
+      } else {
+
+        ind_afrs <- as.matrix(expand.grid(y = y, m = m, a = 1:na, f = 1:nf, r = 1:nr, s = 1:ns))
+        fs_afrs <- ind_afrs[, c("f", "s")]
+        ymfr_afrs <- ind_afrs[, c("y", "m", "f", "r")]
+        ymafs_afrs <- ind_afrs[, c("y", "m", "a", "f", "s")]
+        ars_afrs <- ind_afrs[, c("a", "r", "s")]
+
+        F_ym_afrs[[y, m]] <- array(q_fs[fs_afrs] * F_ymfr[ymfr_afrs] * sel_ymafs[ymafs_afrs], c(na, nf, nr, ns))
+        F_ym_ars[[y, m]] <- array(0, c(na, nr, ns))
+        for (f in 1:nf) {
+          F_ym_ars[[y, m]] <- F_ym_ars[[y, m]] + array(F_ym_afrs[[y, m]][, f, , ], c(na, nr, ns))
+        }
+
+        ind_ars <- as.matrix(expand.grid(y = y, m = m, a = 1:na, r = 1:nr, s = 1:ns))
+        yas_ars <- ind_ars[, c("y", "a", "s")]
+
+        Z_ym_ars[[y, m]] <- F_ym_ars[[y, m]] + array(delta_m * M_yas[yas_ars], c(na, nr, ns))
+        CN_ym_afrs[[y, m]] <- array(
+          F_ym_afrs[[y, m]] * (1 - exp(-Z_ym_ars[[y,m]][ars_afrs])) * N_ym_ars[[y, m]][ars_afrs] / Z_ym_ars[[y, m]][ars_afrs],
+          c(na, nf, nr, ns)
+        )
+
+        CB_afrs <- array(CN_ym_afrs[[y, m]] * fwt_ymafs[ymafs_afrs], c(na, nf, nr, ns))
+        CB_ym_frs[[y, m]] <- array(0, c(nf, nr, ns))
+        for (a in 1:na) CB_ym_frs[[y, m]] <- CB_ym_frs[[y, m]] + array(CB_afrs[a, , , ], c(nf, nr, ns))
+
+        VB_afrs <- array(
+          sel_ymafs[ymafs_afrs] * fwt_ymafs[ymafs_afrs] * N_ym_ars[[y, m]][ars_afrs],
+          c(na, nf, nr, ns)
+        )
+        VB_ym_frs[[y, m]] <- array(0, c(nf, nr, ns))
+        for (a in 1:na) VB_ym_frs[[y, m]] <- VB_ym_frs[[y, m]] + array(VB_afrs[a, , , ], c(nf, nr, ns))
+      }
+
+      ## This year's spawning and recruitment ----
+      if (m == m_spawn) {
+        Npsp_y_ars[[y]] <- sapply2(1:ns, function(s) {
+          sapply(1:nr, function(r) {
+            N_ym_ars[[y, m]][, r, s] * exp(-delta_s[s] * Z_ym_ars[[y, m]][, r, s]) * mat_yas[y, , s]
+          })
+        })
+        Nsp_y_ars[[y]] <- sapply2(1:ns, function(s) {
+          sapply(1:nr, function(r) natal_rs[r, s] * Npsp_y_ars[[y]][, r, s])
+        })
+        S_yrs[y, , ] <- sapply(1:ns, function(s) {
+          sapply(1:nr, function(r) sum(Nsp_y_ars[[y]][, r, s] * fec_yas[y, , s]))
+        })
+
+        if (y > 1) {
+          R_ys[y, ] <- Rdev_ys[y, ] * sapply(1:ns, function(s) {
+            calc_recruitment(sum(S_yrs[y, , s]), SRR = SRR_s[s], a = sralpha_s[s], b = srbeta_s[s])
+          })
+
+          ## Enter recruitment into age structure ----
+          N_ym_ars[[y, m]][1, , ] <- sapply(1:ns, function(s) recdist_rs[, s] * R_ys[y, s])
+        } else {
+          R_ys[y, ] <- 0
+          for (s in 1:ns) R_ys[y, s] <- sum(initN_ars[1, , s])
+        }
+      }
+
+      ## Next season's abundance and total biomass ----
+      ynext <- ifelse(m == nm, y+1, y)
+      mnext <- ifelse(m == nm, 1, m+1)
+      ylast <- min(ynext, ny)
+
+      N_ym_ars[[ynext, mnext]] <- calc_nextN(
+        N = N_ym_ars[[y, m]], surv = exp(-Z_ym_ars[[y, m]]),
+        na = na, nr = nr, ns = ns,
+        advance_age = mnext == m_advanceage,
+        mov = mov_ymarrs[min(ynext, ny), mnext, , , , ]
+      )
+    }
+  }
+
+  # Fill with zeros for year ny + 1
+  if (nm > 1) {
+    for (m in 2:nm) N_ym_ars[[ny+1, m]] <- array(0, c(na, nr, ns))
+  }
+
+  # Output
+  N_ymars <- array(0, c(ny + 1, nm, na, nr, ns))
+  F_ymars <-
+    Z_ymars <- array(NA_real_, c(ny, nm, na, nr, ns))
+  Npsp_yars <-
+    Nsp_yars <- array(NA_real_, c(ny, na, nr, ns))
+
+  F_ymafrs <-
+    CN_ymafrs <- array(NA_real_, c(ny, nm, na, nf, nr, ns))
+  CB_ymfrs <-
+    VB_ymfrs <- array(NA_real_, c(ny, nm, nf, nr, ns))
+
+  N_ymars[] <- do.call(c, N_ym_ars) %>% array(c(na, nr, ns, ny+1, nm)) %>% aperm(c(4:5, 1:3))
+  F_ymars[] <- do.call(c, F_ym_ars) %>% array(c(na, nr, ns, ny, nm)) %>% aperm(c(4:5, 1:3))
+  Z_ymars[] <- do.call(c, Z_ym_ars) %>% array(c(na, nr, ns, ny, nm)) %>% aperm(c(4:5, 1:3))
+  F_ymafrs[] <- do.call(c, F_ym_afrs) %>% array(c(na, nf, nr, ns, ny, nm)) %>% aperm(c(5:6, 1:4))
+  CN_ymafrs[] <- do.call(c, CN_ym_afrs) %>% array(c(na, nf, nr, ns, ny, nm)) %>% aperm(c(5:6, 1:4))
+  CB_ymfrs[] <- do.call(c, CB_ym_frs) %>% array(c(nf, nr, ns, ny, nm)) %>% aperm(c(4:5, 1:3))
+  VB_ymfrs[] <- do.call(c, VB_ym_frs) %>% array(c(nf, nr, ns, ny, nm)) %>% aperm(c(4:5, 1:3))
+  Nsp_yars[] <- do.call(c, Nsp_y_ars) %>% array(c(na, nr, ns, ny)) %>% aperm(c(4, 1:3))
+  Npsp_yars[] <- do.call(c, Npsp_y_ars) %>% array(c(na, nr, ns, ny)) %>% aperm(c(4, 1:3))
+
+  if (condition == "catch") {
+    F_ymfr <- do.call(c, F_ym_fr) %>% array(c(nf, nr, ny, nm)) %>% aperm(c(3:4, 1:2))
+  } else {
+    penalty <- penalty + sum(posfun(Fmax, F_ymfr))
+  }
+
+  out <- list(
+    N_ymars = N_ymars,
+    F_ymars = F_ymars,
+    F_ymfr = F_ymfr,
+    Z_ymars = Z_ymars,
+    F_ymafrs = F_ymafrs,
+    CN_ymafrs = CN_ymafrs,
+    CB_ymfrs = CB_ymfrs,
+    VB_ymfrs = VB_ymfrs,
+    Nsp_yars = Nsp_yars,
+    Npsp_yars = Npsp_yars,
+    S_yrs = S_yrs,
+    R_ys = R_ys,
+    penalty = penalty
+  )
+
+  return(out)
+}
+
+#' Equilibrium spawners per recruit by projection
+#'
+#' Project a population forward in time using [calc_population()] with constant recruitment and
+#' seasonal dynamics (growth, movement-by-season) to obtain per recruit parameters. Note that the fishing
+#' mortality among fleets and stocks remain linked by matrix `q_fs`.
+#'
+#' @inheritParams calc_population
+#'
+#' @param F_mfr Equilibrium fishing mortality (per season). Matrix `[m, f, r]`
+#' @param sel_mafs Selectivity by season, age, fleet, stock. Array `[m, a, f, s]`
+#' @param fwt_mafs Fishery weight array by season, age, fleet, stock. Array `[m, a, r, r]`. Can be used
+#' calculate yield per recruit.
+#' @param mov_marrs Movement array `[m, a, r, r, s]`. If missing, uses a diagonal matrix (no movement among areas).
+#' @param M_as Natural mortality. Matrix `[a, s]`
+#' @param mat_as Maturity at age. Matrix `[a, s]`
+#' @param fec_as Fecundity at age. Matrix `[a, s]`
+#' @details
+#' The initial population vector will be the survival at age evenly divided by the number of regions `nr`.
+#' @return A named list returned by [calc_population()].
+#' @seealso [calc_phi_simple()]
+#' @export
+calc_phi_project <- function(ny, nm, na, nf = 1, nr, ns = 1,
+                             F_mfr = array(0, c(nm, nf, nr)),
+                             sel_mafs = array(1, c(nm, na, nf, ns)),
+                             fwt_mafs = array(1, c(nm, na, nf, ns)),
+                             q_fs = matrix(1, nf, ns),
+                             M_as, mov_marrs,
+                             mat_as, fec_as,
+                             m_spawn = 1, m_advanceage = 1,
+                             delta_s = rep(0, ns),
+                             natal_rs = matrix(1, nr, ns),
+                             recdist_rs = matrix(1/nr, nr, ns)) {
+  delta_m <- 1/nm
+
+  if (missing(mov_marrs)) {
+    mov_ymarrs <- diag(nr) %>% array(c(nr, nr, ny, nm, na, ns)) %>% aperm(c(3:5, 1:2, 6))
+  } else {
+    mov_marrs <- array(mov_marrs, c(nm, na, nr, nr, ns))
+    mov_ymarrs <- array(mov_marrs, c(nm, na, nr, nr, ns, ny)) %>% aperm(c(6, 1:5))
+  }
+  M_yas <- array(M_as, c(na, ns, ny)) %>% aperm(c(3, 1, 2))
+
+  SRR <- rep("BH", ns)
+  sralpha <- srbeta <- rep(1e16, ns)
+
+  mat_yas <- array(mat_as, c(na, ns, ny)) %>% aperm(c(3, 1, 2))
+  fec_yas <- array(fec_as, c(na, ns, ny)) %>% aperm(c(3, 1, 2))
+  sel_ymafs <- array(sel_mafs, c(nm, na, nf, ns, ny)) %>% aperm(c(5, 1:4))
+  fwt_ymafs <- array(fwt_mafs, c(nm, na, nf, ns, ny)) %>% aperm(c(5, 1:4))
+  F_ymfr <- array(F_mfr, c(nm, nf, nr, ny)) %>% aperm(c(4, 1:3))
+
+  initNPR_ars <- sapply2(1:ns, function(s) {
+    NPR_ar <- sapply(1:nr, function(r) {
+      F_af <- lapply(1:nf, function(f) sel_ymafs[1, 1, , f, s] * q_fs[f, s] * F_ymfr[1, 1, f, r])
+      Z_a <- M_yas[1, , s] + Reduce("+", F_af)
+      calc_NPR(Z_a)
+    })
+    return(NPR_ar/nr)
+  })
+
+  pop_phi <- calc_population(
+    ny, nm, na, nf, nr, ns, initN_ars = initNPR_ars,
+    mov_ymarrs, M_yas,
+    SRR_s = SRR, sralpha_s = sralpha, srbeta_s = srbeta,
+    mat_yas, fec_yas, Rdev_ys = matrix(1, ny, ns),
+    m_spawn, m_advanceage, delta_s, natal_rs, recdist_rs,
+    fwt_ymafs = fwt_ymafs, q_fs,
+    sel_ymafs = sel_ymafs,
+    condition = "F",
+    F_ymfr = F_ymfr
+  )
+  return(pop_phi)
+}
+
+#' Simple spawners per recruit calculation
+#'
+#' Calculate spawners per recruit by individual stock. Appropriate for a population model with a single
+#' spatial area and an annual time steps, i.e. single season.
+#'
+#' @inheritParams calc_phi_project
+#' @param Z Total mortality at age
+#' @param mat_a Maturity at age. Vector
+#' @param fec_a Fecundity at age. Vector
+#' @param delta Fraction of season that elapses when spawning occurs, e.g., midseason spawning when `delta = 0.5`.
+#' @return [calc_phi_simple()] returns a numeric for the spawning biomass per recruit.
+#' @seealso [calc_phi_project()]
+#' @export
+calc_phi_simple <- function(Z, fec_a, mat_a, delta = 0) {
+  NPR <- calc_NPR(Z)
+  sum(NPR * exp(-Z * delta) * fec_a * mat_a)
+}
+
+#' @rdname calc_phi_simple
+#' @return [calc_NPR()] returns a numeric, numbers per recruit at age
+#' @param plusgroup Logical, whether the largest age class is a plusgroup accumulator age
+#' @export
+calc_NPR <- function(Z, na = length(Z), plusgroup = TRUE) {
+  surv <- exp(-Z)
+  is_ad <- inherits(Z, "advector")
+  if (is_ad) {
+    `[<-` <- RTMB::ADoverload("[<-")
+    NPR <- advector(numeric(na))
+  } else {
+    NPR <- numeric(na)
+  }
+  NPR[1] <- 1
+  for(a in 2:na) NPR[a] <- NPR[a-1] * surv[a-1]
+  if (plusgroup) NPR[na] <- NPR[na]/(1 - surv[na])
+  return(NPR)
+}
