@@ -1,8 +1,10 @@
 
-
-#' Calculate model residuals
+#' @name residuals
+#' @aliases residuals,MSAassess-method
 #'
-#' Extract residuals from fitted model
+#' @title Calculate model residuals
+#'
+#' @description Extract residuals from fitted model
 #'
 #' @param object [MSAassess-class] object returned by `fit_MSA()`
 #' @param vars Character vector to indicate which residuals will be calculated.
@@ -17,7 +19,8 @@
 #' @aliases residuals
 #' @importFrom stats residuals
 #' @export
-residuals.MSAassess <- function(object, vars, type = c("response", "pearson"), ...) {
+setMethod("residuals", signature(object = "MSAassess"),
+          function(object, vars, type = c("response", "pearson"), ...) {
 
   vars_choices <- c("Cinit_mfr", "Cobs_ymfr", "CAAobs_ymafr", "CALobs_ymlfr",
                     "Iobs_ymi", "IAAobs_ymai", "IALobs_ymli", "SC_ymafrs", "tag_ymarrs")
@@ -226,6 +229,7 @@ residuals.MSAassess <- function(object, vars, type = c("response", "pearson"), .
 
   return(res)
 }
+)
 
 # Vectors
 resid_comp <- function(obs, pred, like, ...) {
@@ -275,12 +279,11 @@ plot_resid_Cobs <- function(fit, f = 1, ...) {
   color <- make_color(ncol(x), type = "region")
   fname <- dat@Dlabel@fleet[f]
 
-  make_tinyplot(year, x, ylab = paste(fname, "catch residual"), name, color, ylim = NULL)
+  if (!all(is.na(x))) make_tinyplot(year, x, ylab = paste(fname, "catch residual"), name, color, ylim = NULL)
   #matplot(year, x, xlab = "Year", ylab = paste(fname, "catch residual"), type = "o",
   #        col = color, pch = 16, lty = 1)
   #abline(h = 0, lty = 2, col = "grey60")
   #if (ncol(x) > 1) legend("topleft", legend = name, col = color, lwd = 1, pch = 16, horiz = TRUE)
-
 
   invisible()
 }
@@ -300,10 +303,13 @@ plot_resid_Iobs <- function(fit, i = 1, ...) {
   year <- make_yearseason(dat@Dlabel@year, dat@Dmodel@nm)
   x <- collapse_yearseason(x)
 
-  plot(year, x, type = "n", xlab = "Year", ylab = paste(name, "residual"))
-  lines(year[!is.na(x)], x[!is.na(x)], col = "grey70", lty = 2)
-  points(year, x, type = "o", pch = 16)
-  abline(h = 0, lty = 1, col = "grey60")
+  if (!all(is.na(x))) {
+    plot(year, x, type = "n", xlab = "Year", ylab = paste(name, "residual"))
+    lines(year[!is.na(x)], x[!is.na(x)], col = "grey70", lty = 2)
+    points(year, x, type = "o", pch = 16)
+    abline(h = 0, lty = 1, col = "grey60")
+  }
+
 
   invisible()
 }
@@ -475,8 +481,8 @@ plot_resid_tagmov <- function(fit, yy = 1, aa = 1, s = 1, ...) {
     xdiff <- c(xdiff, xdiff[1])
   }
 
-  border <- ifelse(any(xdiff < 0.5), NA, "grey60")
-  rect_diff <- ifelse(any(xdiff < 0.5), 0.475, 0.5)
+  border <- ifelse(any(xdiff < 0.5, na.rm = TRUE), NA, "grey60")
+  rect_diff <- ifelse(any(xdiff < 0.5, na.rm = TRUE), 0.475, 0.5)
 
   df <- lapply(1:nrow(z), function(i) {
     data.frame(

@@ -1,10 +1,10 @@
 Package: multiSA
 Title: Multi-Stock Assessment
-Version: 0.1.0
+Version: 0.1.1
 Authors@R: 
     person("Quang", "Huynh", , "quang@bluematterscience.com", role = c("aut", "cre"),
            comment = c(ORCID = "0000-0001-7835-4376"))
-Date: 2026-01-16
+Date: 2026-03-20
 Maintainer: Quang Huynh <quang@bluematterscience.com>
 Description: Implementation of a next-generation, multi-stock age-structured fisheries assessment model. 
   'multiSA' is intended for use in mixed fisheries where stock composition can not be readily identified in 
@@ -13,7 +13,7 @@ Description: Implementation of a next-generation, multi-stock age-structured fis
 License: GPL (>= 3)
 Depends: R (>= 3.5.0)
 Imports: dplyr, gplots, graphics, methods, pbapply, reshape2,
-        rmarkdown, snowfall, stats, tinyplot, RTMB (>= 1.7), TMB, utils
+        rmarkdown, snowfall, stats, tinyplot, RTMB (>= 1.9), TMB, utils
 Suggests: numDeriv, RTMBdist, usethis
 LazyLoad: yes
 Encoding: UTF-8
@@ -22,7 +22,7 @@ URL: https://blue-matter.github.io/multiSA/,
         https://github.com/Blue-Matter/multiSA
 BugReports: https://github.com/Blue-Matter/multiSA/issues
 NeedsCompilation: no
-Packaged: 2026-01-29 23:31:49 UTC; quang
+Packaged: 2026-03-20 18:39:13 UTC; quang
 Author: Quang Huynh [aut, cre] (ORCID: <https://orcid.org/0000-0001-7835-4376>)
 Repository: CRAN
-Date/Publication: 2026-02-03 12:40:13 UTC
+Date/Publication: 2026-03-21 00:40:13 UTC
