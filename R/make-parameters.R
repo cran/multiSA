@@ -23,9 +23,9 @@
 #' See [MSAdata-class]. Here, an additional index `p` represents some other number of parameters that is described below.
 #'
 #' \describe{
-#' \item{`t_R0_s`}{Vector by `s`. Unfished recruitment, i.e., intersection of unfished replacement line and average stock recruit function,
+#' \item{`t_R0_s`}{Vector by `s`. Unfished recruitment, i.e., intersection of unfished replacement line and stock recruit function,
 #' is represented as: `R0_s <- exp(t_R0_s) * MSAdata@Dmodel@scale_s`. By default, `t_R0_s = 3`}
-#' \item{`t_h_s`}{Vector by `s`. Steepness of the stock-recruit function. Logit space for Beverton-Holt and log space for Ricker functions.
+#' \item{`t_h_s`}{Vector by `s`. Steepness of the stock-recruit function. Logit space for Beverton-Holt (`h = 0.8 * plogis(t_h_s) + 0.2`) and log space for Ricker function (`h = exp(t_h_s) + 0.2`).
 #' Default steepness value of 0.8}
 #' \item{`mat_ps`}{Matrix `[2, s]`. Maturity parameters (can be estimated or specified in data object). Logistic functional form. The
 #' parameter in the first row is the age of 50 percent maturity in logit space: `a50_s <- plogis(mat_ps[1, ] * na)`.
@@ -46,8 +46,8 @@
 #' \end{cases}
 #' }
 #' }
-#' \item{`sel_pf`}{Matrix `[3, f]`. Fishery selectivity parameters in logit or log space. See equations [conv_selpar()], where `sel_pf` is the `x` matrix.}
-#' \item{`sel_pi`}{Matrix `[3, i]`. Index selectivity parameters in logit or log space. See equations [conv_selpar()], where `sel_pi` is the `x` matrix.}
+#' \item{`sel_pf`}{Matrix `[3, f]`. Fishery selectivity parameters in logit or log space. See equations in [conv_selpar()], where `sel_pf` is the `x` matrix.}
+#' \item{`sel_pi`}{Matrix `[3, i]`. Index selectivity parameters in logit or log space. See equations in [conv_selpar()], where `sel_pi` is the `x` matrix.}
 #' \item{`mov_x_marrs`}{Array `[m, a, r, r, s]`. Base movement matrix. Set to -1000 to effectively exclude movements from region pairs.
 #' See equations in [conv_mov()]}
 #' \item{`mov_g_ymars`}{Array `[y, m, a, r, s]`. Attractivity term in gravity model for movement. If `x` and `v` are zero,
@@ -57,8 +57,8 @@
 #' Only used when `est_mov = "dist_random"`. Default SD of 0.1.}
 #' \item{`t_corg_ps`}{Array `[sum(1:(nr - 1)), s]`. Lower triangle of the correlation matrix for `mov_g_ymars`, to be obtained with the
 #' Cholesky factorization. Only used when `est_mov = dist_random`. Default values of zero.}
-#' \item{`log_initF_mfr`}{Array `[m, f, r]`. Initial F corresponding to the equilibrium catch.}
-#' \item{`log_initrdev_as`}{Array `[na - 1, s]`. Recruitment deviations for the initial abundance-at-age vector.}
+#' \item{`log_initF_mfr`}{Array `[m, f, r]`. Initial F corresponding to the equilibrium catch. Default is `log(0.1)` for seasons, fleets, and regions where `Dfishery@Cinit_mfr > 1e-8`, otherwise, not estimated (Finit = 0).}
+#' \item{`log_initrdev_as`}{Array `[na - 1, s]`. Recruitment deviations for the initial abundance-at-age vector. Default is zero.}
 #' }
 #'
 #' @section Start list:
@@ -137,7 +137,7 @@ make_parameters <- function(MSAdata, start = list(), map = list(),
     if (any(!Dstock@presence_rs)) {
       for(s in 1:ns) {
         presence_r <- Dstock@presence_rs[, s]
-        if (any(!presence_r)) p$mov_x_marrs[, , presence_r, presence_r, s] <- -1000
+        if (any(!presence_r)) p$mov_x_marrs[, , , !presence_r, s] <- -1000 # No fish go here
       }
     }
   }
@@ -168,7 +168,7 @@ make_parameters <- function(MSAdata, start = list(), map = list(),
           })
         })
       })
-      p$log_Fdev_ymfr[Dfishery@Cobs_ymfr < 1e-8] <- -1000
+      p$log_Fdev_ymfr[Dfishery@Cobs_ymfr <= 1e-8] <- -1000
     } else {
       p$log_Fdev_ymfr <- array(0, c(ny, nm, nf, nr))
     }
@@ -274,8 +274,14 @@ make_parameters <- function(MSAdata, start = list(), map = list(),
 
   # Initial conditions ----
   if (is.null(p$log_initF_mfr)) {
-    p$log_initF_mfr <- ifelse(Dfishery@Cinit_mfr < 1e-8, -1000, log(0.1))
+    if (any(Dfishery@Cinit_mfr > 1e-8)) {
+      if ((nm == 1 && nr == 1) || Dmodel@condition == "F") {
+        p$log_initF_mfr <- ifelse(Dfishery@Cinit_mfr <= 1e-8, -1000, log(0.1))
+      }
+    }
   }
+  if (is.null(p$log_initF_mfr)) p$log_initF_mfr <- array(-1000, c(nm, nf, nr))
+
   if (is.null(p$log_initrdev_as)) {
     p$log_initrdev_as <- matrix(0, na-1, ns)
   }
@@ -357,7 +363,7 @@ make_map <- function(p, MSAdata, map = list(),
     } else {
       message_info("Starting steepness = ", paste(h_s, collapse = ", "))
       if (any(is.na(map$t_h_s))) {
-        message_info("Fixed for stock ", paste(which(is.na(map$t_h_s)), collapse = ", "))
+        message_info("Steepness fixed for stock: ", paste(which(is.na(map$t_h_s)), collapse = ", "))
       }
     }
   }
@@ -393,7 +399,7 @@ make_map <- function(p, MSAdata, map = list(),
       if (!length(Dstock@M_yas)) stop("Natural mortality is not estimated. Need M values in the data slot 'M_yas'.")
     }
   } else if (!silent && any(!is.na(map$log_M_s))) {
-    message_info("Estimating natural mortality for stock ", paste(which(!is.na(map$log_M_s)), collapse = ", "))
+    message_info("Estimating natural mortality for stock: ", paste(which(!is.na(map$log_M_s)), collapse = ", "))
   }
 
   if (!silent) {
@@ -402,7 +408,7 @@ make_map <- function(p, MSAdata, map = list(),
     } else if (all(is.na(map$log_rdev_ys))) {
       message_info("No recruitment deviates are estimated")
     } else {
-      message_info("Estimating recruitment deviates for")
+      message_info("Estimating recruitment deviates for:")
       sapply(1:ns, function(s) {
         map_s <- matrix(map$log_rdev_ys, ny, ns)[, s]
         message_info("Stock ", s, ": ", sum(!is.na(map_s)), " out of ", ny, " years")
@@ -419,6 +425,9 @@ make_map <- function(p, MSAdata, map = list(),
     }
   } else if (!silent && any(!is.na(map$log_sdr_s))) {
     message_info("Estimating sigma_R (SD of recruitment deviates) for stock ", paste(which(!is.na(map$log_sdr_s)), collapse = ", "))
+  }
+  if (!silent) {
+    message_info("sigma_R = ", paste(round(exp(p$log_sdr_s), 4), collapse = ", "))
   }
 
   if (nr == 1 || est_mov == "none") {
@@ -580,9 +589,9 @@ make_map <- function(p, MSAdata, map = list(),
   }
 
   if (is.null(map$log_Fdev_ymfr)) {
-    if (Dmodel@condition == "F" && any(Dfishery@Cobs_ymfr < 1e-8)) {
+    if (Dmodel@condition == "F" && any(Dfishery@Cobs_ymfr <= 1e-8)) {
       map$log_Fdev_ymfr <- local({
-        m <- ifelse(Dfishery@Cobs_ymfr < 1e-8, NA, TRUE)
+        m <- ifelse(Dfishery@Cobs_ymfr <= 1e-8, NA, TRUE)
         m[!is.na(m)] <- 1:sum(m, na.rm = TRUE)
         factor(m)
       })
@@ -601,7 +610,9 @@ make_map <- function(p, MSAdata, map = list(),
       sel_f <- Dfishery@sel_f[f]
       vec <- rep(TRUE, 3)
       if (sel_f %in% c("logistic_age", "logistic_length")) vec[3] <- NA
-      if (sel_f %in% c("B", "SB")) vec[] <- NA
+      if (sel_f %in% c("B", "SB") || startsWith(sel_f, "length") || startsWith(sel_f, "age")) {
+        vec[] <- NA
+      }
       return(vec)
     })
     sel_pf[!is.na(sel_pf)] <- 1:sum(sel_pf, na.rm = TRUE)
@@ -644,10 +655,14 @@ make_map <- function(p, MSAdata, map = list(),
         } else {
           fname <- ""
         }
+
+        message_info("Fleet ", bb, fname, ":")
+        message_info("  ", Dfishery@sel_f[bb], "")
         if (nage || nlen) {
-          message_info("Fleet ", bb, fname, ": ", Dfishery@sel_f[bb], ", ", age, " and ", len)
+          message_info("  ", age)
+          message_info("  ", len)
         } else {
-          message_info("Fleet ", bb, fname, ": ", Dfishery@sel_f[bb], ", no composition data")
+          message_info("  No composition data")
         }
       } else {
         fleet <- lapply(1:nf, function(ff) {
@@ -667,11 +682,11 @@ make_map <- function(p, MSAdata, map = list(),
 
       if (grepl("logistic", Dfishery@sel_f[bb])) {
         sel5 <- -sqrt(-2 * log(0.05)) * fsel_start[2, bb] + fsel_start[1, bb]
-        message_info("   Selectivity start values: full sel = ", round(fsel_start[1, bb], 2),
+        message_info("  Selectivity start values: full sel = ", round(fsel_start[1, bb], 2),
                      ", ascending limb SD = ", round(fsel_start[2, bb], 2), " (5% sel = ", round(sel5, 2), ")")
       } else if (grepl("dome", Dfishery@sel_f[bb])) {
         sel5 <- -sqrt(-2 * log(0.05)) * fsel_start[2, bb] + fsel_start[1, bb]
-        message_info("   Selectivity start values: full sel = ", round(fsel_start[1, bb], 2),
+        message_info("  Selectivity start values: full sel = ", round(fsel_start[1, bb], 2),
                      ", ascending limb SD = ", round(fsel_start[2, bb], 2), " (5% sel = ", round(sel5, 2), ")",
                      ", descending limb SD = ", round(fsel_start[3, bb], 2))
       }
@@ -688,7 +703,15 @@ make_map <- function(p, MSAdata, map = list(),
       if (sel_i %in% c("logistic_age", "logistic_length")) vec[3] <- NA
 
       int_sel_i <- suppressWarnings(as.integer(sel_i))
-      if (sel_i %in% c("B", "SB") || !is.na(int_sel_i)) vec[] <- NA
+      if (sel_i %in% c("B", "SB") || !is.na(int_sel_i) || startsWith(sel_i, "length") || startsWith(sel_i, "age")) {
+        vec[] <- NA
+      } else {
+        sel_char <- strsplit(sel_i, "_")[[1]]
+        ff <- suppressWarnings(is.numeric(sel_char[1]))
+        if (length(sel_char) == 3 && !is.na(ff)) {
+          vec[] <- NA
+        }
+      }
       return(vec)
     })
     sel_pi[!is.na(sel_pi)] <- 1:sum(sel_pi, na.rm = TRUE)
@@ -715,15 +738,17 @@ make_map <- function(p, MSAdata, map = list(),
       }
       if (Dmodel@ns > 1) {
         s <- which(apply(Dsurvey@samp_irs[i, , , drop = FALSE], 3, sum) > 0)
-        stext <- paste("; stock", paste(s, collapse = ", "))
+        stext <- paste("; surveys stock", paste(s, collapse = ", "))
       } else {
         stext <- character(0)
       }
 
+      message_info("Index ", i, iname, ":")
+
       if (!is.na(as.integer(sel_i))) {
-        message_info("Index ", i, iname, ": fleet ", sel_i, rtext, stext)
+        message_info("  Mirrors fleet ", sel_i, rtext, stext)
       } else {
-        message_info("Index ", i, iname, ": ", sel_i, rtext, stext)
+        message_info("  ", sel_i, rtext, stext)
       }
 
       if (grepl("logistic", sel_i)) {
@@ -736,17 +761,28 @@ make_map <- function(p, MSAdata, map = list(),
                      ", ascending limb SD = ", round(isel_start[2, i], 2),  " (5% sel = ", round(sel5, 2), ")",
                      ", descending limb SD = ", round(isel_start[3, i], 2))
       }
+      message_info("\n")
     }
   }
 
   # Initial conditions ----
-  if (is.null(map$log_initF_mfr) && any(Dfishery@Cinit_mfr < 1e-8)) {
-    map$log_initF_mfr <- local({
-      m <- ifelse(Dfishery@Cinit_mfr < 1e-8, NA, TRUE)
-      m[!is.na(m)] <- 1:sum(m, na.rm = TRUE)
-      factor(m)
-    })
+  if (is.null(map$log_initF_mfr)) {
+
+    if (any(Dfishery@Cinit_mfr <= 1e-8)) {
+      map$log_initF_mfr <- local({
+        m <- ifelse(Dfishery@Cinit_mfr <= 1e-8, NA, TRUE)
+        m[!is.na(m)] <- 1:sum(m, na.rm = TRUE)
+        factor(m)
+      })
+    }
+    if (any(Dfishery@Cinit_mfr > 1e-8)) {
+      simple_model <- nm == 1 && nr == 1
+      if (!simple_model && Dmodel@condition == "catch") {
+        map$log_initF_mfr <- factor(array(NA, c(nm, nf, nr)))
+      }
+    }
   }
+
   if (!silent && (is.null(map$log_initF_mfr) || any(!is.na(map$log_initF_mfr)))) {
     message_info("Initial equilibrium F will be estimated")
   }

@@ -4,7 +4,7 @@
 #'
 #' Wrapper function that calls RTMB to create the model and perform the numerical optimization
 #'
-#' @param MSAdata Data object. Class [MSAdata-class], validated by [check_data()]
+#' @param x Data object. Class [MSAdata-class], validated by [check_data()]. Alternatively, [MSAassess-class] that will be fitted again.
 #' @param parameters List of parameters, e.g., returned by [make_parameters()] and validated by [check_parameters()].
 #' @param map List of parameters indicated whether they are fixed and how they are shared, e.g., returned by [make_parameters()].
 #' See [RTMB::MakeADFun()].
@@ -20,33 +20,37 @@
 #' @importFrom methods new
 #' @seealso [report()] [retrospective()]
 #' @export
-fit_MSA <- function(MSAdata, parameters, map = list(), random = NULL,
-                     run_model = TRUE, do_sd = TRUE, report = TRUE, silent = FALSE,
-                     control = list(iter.max = 2e+05, eval.max = 4e+05), ...) {
+fit_MSA <- function(x, parameters, map = list(), random = NULL,
+                    run_model = TRUE, do_sd = TRUE, report = TRUE, silent = FALSE,
+                    control = list(iter.max = 2e+05, eval.max = 4e+05), ...) {
 
-  MSAdata@Misc$map <- map
-  MSAdata@Misc$random <- random
+  if (inherits(x, "MSAdata")) {
+    x@Misc$map <- map
+    x@Misc$random <- random
 
-  #old_comparison <- TapeConfig()["comparison"]
-  #on.exit(TapeConfig(comparison = old_comparison))
-  #TapeConfig(comparison = "tape")
+    #old_comparison <- TapeConfig()["comparison"]
+    #on.exit(TapeConfig(comparison = old_comparison))
+    #TapeConfig(comparison = "tape")
 
-  func <- function(p) .MSA(p, d = MSAdata)
+    func <- function(p) .MSA(p, d = x)
 
-  if (!silent) message("Building model with RTMB::MakeADFun()..")
-  obj <- RTMB::MakeADFun(
-    func = func, parameters = parameters,
-    map = map, random = random,
-    silent = TRUE,
-    ...
-  )
+    if (!silent) message("Building model with RTMB::MakeADFun()..")
+    obj <- RTMB::MakeADFun(
+      func = func, parameters = parameters,
+      map = map, random = random,
+      silent = TRUE,
+      ...
+    )
+  } else if (inherits(x, "MSAassess")) {
+    obj <- x@obj
+  }
 
   if (!silent) {
     fn <- obj$fn()
     if (is.na(fn)) {
       message_oops("Objective function is NA at initial values.")
       report_start <- obj$report()
-      if (MSAdata@Dmodel@condition == "catch" && any(is.na(report_start$F_ymfr))) {
+      if (x@Dmodel@condition == "catch" && any(is.na(report_start$F_ymfr))) {
         message_oops("NA's found in F array. Try increasing start value of R0.")
       }
 
@@ -62,7 +66,7 @@ fit_MSA <- function(MSAdata, parameters, map = list(), random = NULL,
     }
     if (any(!gr, na.rm = TRUE)) {
       par_zero <- unique(names(obj$par)[!gr])
-      message_oops("Gradients of zero at initial values for these parameters (may not be identifiable):")
+      message_oops("Gradients of zero at initial values for these parameters (may not be identifiable without prior):")
       message_info(paste0(par_zero, collapse = ", "))
     }
   }
@@ -81,7 +85,7 @@ fit_MSA <- function(MSAdata, parameters, map = list(), random = NULL,
 
   if (report) {
     if (!silent) message("Generating report list..")
-    M@report <- obj$report(obj$env$last.par.best) %>% update_report(MSAdata)
+    M@report <- update_report(obj$report(obj$env$last.par.best), MSAdata = x)
   }
   if (!silent) message("Complete.")
   return(M)
@@ -272,7 +276,7 @@ update_report <- function(r, MSAdata) {
   ## Index selectivity ----
   if (ni > 0) {
     selconv_pi <- conv_selpar(p$sel_pi, type = Dsurvey@sel_i, maxage = na - 1, maxL = 0.95 * max(Dmodel@lmid))
-    sel_li <- calc_sel_len(selconv_pi, Dmodel@lmid, type = Dsurvey@sel_i)
+    sel_li <- calc_sel_len(selconv_pi, Dmodel@lmid, type = Dsurvey@sel_i, fsel_type = Dfishery@sel_f, fsel_len = sel_lf)
   }
 
   ## Fishery and index selectivity ----
@@ -329,14 +333,20 @@ update_report <- function(r, MSAdata) {
         for (y in 1:ny) {
           for (m in 1:nm) {
             sel_ymais[y, m, , , s] <- calc_isel_age(
-              sel_li, Dstock@LAK_ymals[y, m, , , s], Dsurvey@sel_i, selconv_pi, matrix(sel_ymafs[y, m, , , s], na, nf), mat = mat_yas[y, , s], a = seq(1, na) - 1
+              sel_li, Dstock@LAK_ymals[y, m, , , s], Dsurvey@sel_i, selconv_pi,
+              matrix(sel_ymafs[y, m, , , s], na, nf), mat = mat_yas[y, , s], a = seq(1, na) - 1,
+              fsel_type = Dfishery@sel_f,
+              fsel_len = sel_lf
             )
           }
         }
       } else {
         for (m in 1:nm) {
           sel_ymais[1, m, , , s] <- calc_isel_age(
-            sel_li, Dstock@LAK_ymals[1, m, , , s], Dsurvey@sel_i, selconv_pi, matrix(sel_ymafs[1, m, , , s], na, nf), mat = mat_yas[1, , s], a = seq(1, na) - 1
+            sel_li, Dstock@LAK_ymals[1, m, , , s], Dsurvey@sel_i, selconv_pi,
+            matrix(sel_ymafs[1, m, , , s], na, nf), mat = mat_yas[1, , s], a = seq(1, na) - 1,
+            fsel_type = Dfishery@sel_f,
+            fsel_len = sel_lf
           )
         }
         isel_ind <- isel1_ind <- as.matrix(expand.grid(y = 2:ny, m = 1:m, a = 1:na, i = 1:ni, s = s))
@@ -433,7 +443,7 @@ update_report <- function(r, MSAdata) {
   initRdev_as <- matrix(NA_real_, na, ns)
   initRdev_as[-1, ] <- exp(p$log_initrdev_as + bcrinit_as)
   initRdev_as[1, ] <- Rdev_ys[1, ]
-  initF_mfr <- exp(p$log_initF_mfr)
+  initF_mfr <- array(NA_real_, c(nm, nf, nr))
 
   initNPR_mars <- array(NA_real_, c(nm, na, nr, ns))
   initNeq_mars <- initN_mars <- array(NA_real_, c(nm, na, nr, ns))
@@ -444,48 +454,30 @@ update_report <- function(r, MSAdata) {
   initCN_mafrs <- array(0, c(nm, na, nf, nr, ns))
   initCB_mfrs <- array(0, c(nm, nf, nr, ns))
 
-  if (all(Dfishery@Cinit_mfr < 1e-8)) {
+  if (all(Dfishery@Cinit_mfr <= 1e-8)) {
+    initF_mfr[] <- 0
     initNPR_mars[] <- NPR0_mars
     initN_mars[] <- initN_mars
     initphi_s <- phi_s
     initReq_s <- R0_s
     initNeq_mars[] <- N0_mars
-  } else {
-    if (nm == 1 && nr == 1) {
-      initZ_mars[1, , 1, ] <- sapply(1:ns, function(s) {
-        F_a <- lapply(1:nf, function(f) sel_ymafs[1, 1, , f, s] * q_fs[f, s] * initF_mfr[1, f, 1])
-        Z_a <- M_yas[1, , s] + Reduce("+", F_a)
-        return(Z_a)
-      })
-      initNPR_mars[1, , 1, ] <- sapply(1:ns, function(s) calc_NPR(initZ_mars[1, , 1, s]))
-      initphi_s <- sapply(1:ns, function(s) {
-        sum(initNPR_mars[1, , 1, s] * exp(-Dstock@delta_s[s] * initZ_mars[1, , 1, s]) * mat_yas[1, , s] * Dstock@fec_yas[1, , s])
-      })
-    } else {
-      NPR_init <- calc_phi_project(
-        nyinit, nm, na, nf, nr, ns, F_mfr = initF_mfr, sel_mafs = sel_ymafs[1, , , , ],
-        fwt_mafs = Dfishery@fwt_ymafs[1, , , , ], q_fs = q_fs,
-        M_as = M_yas[1, , ], mov_marrs = mov_ymarrs[Dmodel@y_phi, , , , , ],
-        mat_as = mat_yas[1, , ], fec_as = Dstock@fec_yas[1, , ], m_spawn = Dstock@m_spawn, m_advanceage = Dstock@m_advanceage,
-        delta_s = Dstock@delta_s, natal_rs = Dstock@natal_rs, recdist_rs = recdist_rs
-      )
-      initZ_mars[] <- NPR_init[["Z_ymars"]][nyinit, , , , ]
-      initNPR_mars[] <- NPR_init[["N_ymars"]][nyinit, , , , ]
-      initphi_s <- sapply(1:ns, function(s) sum(NPR_init[["S_yrs"]][nyinit, , s]))
-    }
-
+  } else if (nm == 1 && nr == 1) {
+    initF_mfr[] <- exp(p$log_initF_mfr)
+    initZ_mars[1, , 1, ] <- sapply(1:ns, function(s) {
+      F_a <- lapply(1:nf, function(f) sel_ymafs[1, 1, , f, s] * q_fs[f, s] * initF_mfr[1, f, 1])
+      Z_a <- M_yas[1, , s] + Reduce("+", F_a)
+      return(Z_a)
+    })
+    initNPR_mars[1, , 1, ] <- sapply(1:ns, function(s) calc_NPR(initZ_mars[1, , 1, s]))
+    initphi_s <- sapply(1:ns, function(s) {
+      sum(initNPR_mars[1, , 1, s] * exp(-Dstock@delta_s[s] * initZ_mars[1, , 1, s]) * mat_yas[1, , s] * Dstock@fec_yas[1, , s])
+    })
     initReq_s <- sapply(1:ns, function(s) {
       calc_recruitment(initphi_s[s], Dstock@SRR_s[s], eq = TRUE, a = sralpha_s[s], b = srbeta_s[s])
     })
     initNeq_mars[] <- sapply2(1:ns, function(s) array(initNPR_mars[, , , s] * initReq_s[s], c(nm, na, nr)))
-  }
 
-  ind <- as.matrix(expand.grid(m = 1:nm, a = 1:na, r = 1:nr, s = 1:ns))
-  as_ind <- ind[, c("a", "s")]
-  initN_mars[] <- initRdev_as[as_ind] * initNeq_mars[ind]
-  initN_ars[] <- initN_mars[1, , , ]
-
-  if (any(Dfishery@Cinit_mfr >= 1e-8)) {
+    # Equilibrium catch
     ind <- as.matrix(expand.grid(m = 1:nm, a = 1:na, f = 1:nf, r = 1:nr, s = 1:ns))
     mfr_mafrs <- ind[, c("m", "f", "r")]
     mars_mafrs <- ind[, c("m", "a", "r", "s")]
@@ -499,7 +491,43 @@ update_report <- function(r, MSAdata) {
       ymafs_ind <- ind[, c("y", "m", "a", "f", "s")]
       initCB_mfrs[] <- initCB_mfrs[] + initCN_mafrs[mafrs_ind] * Dfishery@fwt_ymafs[ymafs_ind]
     }
+
+  } else {
+
+    if (Dmodel@condition == "F") initF_mfr[] <- exp(p$log_initF_mfr)
+
+    init_proj <- calc_init_population(
+      nyinit, nm, na, nf, nr, ns,
+      initN_ars = array(N0_mars[Dstock@m_spawn, , , ], c(na, nr, ns)),
+      condition = Dmodel@condition,
+      C_mfr = Dfishery@Cinit_mfr, F_mfr = initF_mfr, sel_mafs = sel_ymafs[1, , , , ],
+      fwt_mafs = Dfishery@fwt_ymafs[1, , , , ], q_fs = q_fs,
+      M_as = M_yas[1, , ], mov_marrs = mov_ymarrs[Dmodel@y_phi, , , , , ],
+      mat_as = mat_yas[1, , ], fec_as = Dstock@fec_yas[1, , ],
+      SRR_s = Dstock@SRR_s, sralpha_s = sralpha_s, srbeta_s = srbeta_s,
+      m_spawn = Dstock@m_spawn, m_advanceage = Dstock@m_advanceage,
+      delta_s = Dstock@delta_s, natal_rs = Dstock@natal_rs, recdist_rs = recdist_rs,
+      Fmax = Dmodel@Fmax, nitF = Dmodel@nitF
+    )
+
+    if (Dmodel@condition == "catch") initF_mfr[] <- init_proj[["F_ymfr"]][nyinit, , , ]
+
+    initZ_mars[] <- init_proj[["Z_ymars"]][nyinit, , , , ]
+    initReq_s <- init_proj[["R_ys"]][nyinit, ]
+    initNeq_mars[] <- init_proj[["N_ymars"]][nyinit, , , , ]
+    initNPR_mars[] <- sapply2(1:ns, function(s) initNeq_mars[, , , s]/initReq_s[s])
+    initphi_s <- apply(init_proj[["S_yrs"]][nyinit, , , drop = FALSE], 3, sum)/initReq_s
+
+    # Equilibrium catch
+    initCN_mafrs[] <- init_proj$CN_ymafrs[nyinit, , , , , ]
+    initCB_mfrs[] <- init_proj$CB_ymfrs[nyinit, , , , ]
   }
+
+  # Initial abundance ----
+  ind <- as.matrix(expand.grid(m = 1:nm, a = 1:na, r = 1:nr, s = 1:ns))
+  as_ind <- ind[, c("a", "s")]
+  initN_mars[] <- initRdev_as[as_ind] * initNeq_mars[ind]
+  initN_ars[] <- initN_mars[1, , , ]
 
   # Run population model ----
   pop <- calc_population(
@@ -534,15 +562,18 @@ update_report <- function(r, MSAdata) {
   # Likelihoods ----
   y_like <- seq(1, ny - Dmodel@nyret)
 
-  ## Initial catch ----
   Cinit_mfr <- Dfishery@Cinit_mfr
-  any_Cinit <- any(Cinit_mfr >= 1e-8)
+  any_Cinit <- any(Cinit_mfr > 1e-8)
   if (any_Cinit) {
     initCB_mfr <- apply(initCB_mfrs, 1:3, sum)
 
-    Cinit_mfr <- OBS(Cinit_mfr)
-    loglike_Cinit_mfr <- dnorm(log(Cinit_mfr/initCB_mfr), 0, 0.01, log = TRUE)
-    loglike_Cinit_mfr[Cinit_mfr < 1e-8] <- 0
+    if ((nm == 1 && nr == 1) || Dmodel@condition == "F") {
+      Cinit_mfr <- OBS(Cinit_mfr)
+      loglike_Cinit_mfr <- dnorm(log(Cinit_mfr/initCB_mfr), 0, 0.01, log = TRUE)
+      loglike_Cinit_mfr[Cinit_mfr <= 1e-8] <- 0
+    } else {
+      loglike_Cinit_mfr <- 0
+    }
   } else {
     loglike_Cinit_mfr <- 0
   }
@@ -550,12 +581,13 @@ update_report <- function(r, MSAdata) {
   ## Catch ----
   Cobs_ymfr <- Dfishery@Cobs_ymfr
   if (Dmodel@condition == "F") {
+
     CB_ymfr <- apply(CB_ymfrs, 1:4, sum)
     Cobs_ymfr <- OBS(Cobs_ymfr)
 
     loglike_Cobs_ymfr <- array(0, c(ny, nm, nf, nr))
     loglike_Cobs_ymfr[] <- dnorm(log(Cobs_ymfr/CB_ymfr), 0, Dfishery@Csd_ymfr, log = TRUE)
-    loglike_Cobs_ymfr[Cobs_ymfr < 1e-8] <- 0
+    loglike_Cobs_ymfr[Cobs_ymfr <= 1e-8] <- 0
     loglike_Cobs_ymfr[1:ny > max(y_like), , , ] <- 0
   } else {
     loglike_Cobs_ymfr <- 0
@@ -574,7 +606,7 @@ update_report <- function(r, MSAdata) {
         sapply(1:nm, function(m) {
           sapply(y_like, function(y) {
             pred <- CN_ymafr[y, m, , f, r]
-            like_comp(obs = (Cobs_ymfr[y, m, f, r] >= 1e-8) * CAAobs_ymafr[y, m, , f, r],
+            like_comp(obs = (Cobs_ymfr[y, m, f, r] > 1e-8) * CAAobs_ymafr[y, m, , f, r],
                       pred = pred, type = Dfishery@fcomp_like,
                       N = Dfishery@CAAN_ymfr[y, m, f, r], theta = Dfishery@CAAtheta_f[f],
                       stdev = sqrt(sum(pred)/pred))
@@ -642,7 +674,7 @@ update_report <- function(r, MSAdata) {
         sapply(1:nm, function(m) {
           sapply(y_like, function(y) {
             pred <- CN_ymlfr[y, m, , f, r]
-            like_comp(obs = (Cobs_ymfr[y, m, f, r] >= 1e-8) * CALobs_ymlfr[y, m, , f, r],
+            like_comp(obs = (Cobs_ymfr[y, m, f, r] > 1e-8) * CALobs_ymlfr[y, m, , f, r],
                       pred = pred, type = Dfishery@fcomp_like,
                       N = Dfishery@CALN_ymfr[y, m, f, r], theta = Dfishery@CALtheta_f[f],
                       stdev = sqrt(sum(pred)/pred))
@@ -788,7 +820,7 @@ update_report <- function(r, MSAdata) {
             sapply(y_like, function(y) {
               pred <- SCpred_ymafrs[y, m, aa, ff, r, ]
               Cobs <- sum(Cobs_ymfr[y, m, ff, r])
-              like_comp(obs = (Cobs >= 1e-8) * SC_ymafrs[y, m, aa, ff, r, ],
+              like_comp(obs = (Cobs > 1e-8) * SC_ymafrs[y, m, aa, ff, r, ],
                         pred = pred, type = Dfishery@SC_like,
                         N = Dfishery@SCN_ymafr[y, m, aa, ff, r], theta = Dfishery@SCtheta_f[ff],
                         stdev = Dfishery@SCstdev_ymafrs[y, m, aa, ff, r, ])
@@ -852,11 +884,9 @@ update_report <- function(r, MSAdata) {
     tagpred_ymarrs[] <- sapply2(1:nrow(Dtag@tag_aa), function(aa) {
       a1 <- which(Dtag@tag_aa[aa, ] > 0)[1]
       sapply2(1:nm, function(m) {
-        mprev <- ifelse(m == 1, nm, m - 1)
         sapply2(1:nrow(Dtag@tag_yy), function(yy) {
           y1 <- which(Dtag@tag_yy[yy, ] > 0)[1]
-          yprev <- ifelse(y1 == 1, 1, y1 - 1)
-          mov_ymarrs[yprev, mprev, a1, , , ] # rrsyma
+          mov_ymarrs[y1, m, a1, , , ] # rrsyma
         })
       })
     }) %>%

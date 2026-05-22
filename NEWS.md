@@ -1,4 +1,14 @@
 
+
+## multiSA 0.2.0
+
+- New selectivity options: constant over size and age range, mapping a subset of length or age from fleet to index
+- Add `calc_init_population()` for spool-up in spatial or seasonal models
+- Report most state variables and fits to data invisibly in plotting function
+- Add multivariate logitnormal likelihood to comp data
+- Update residual calculation for composition data
+- Fix predictions of tag transitions. Model previously had a 1 season lag that was erroneous. 
+
 ## multiSA 0.1.1
 
 - More robust max F check when `calc_F()` to prevent numerical overflow (check in log space rather than normal space)
