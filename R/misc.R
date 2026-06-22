@@ -136,33 +136,32 @@ conv_mat <- function(x, na) {
 
 #' Optimize RTMB model
 #'
-#' A convenient function that fits a RTMB model and calculates standard errors.
+#' A convenient function to fit a RTMB model with [stats::nlminb()]
 #'
 #' @param obj The list returned by [RTMB::MakeADFun()]
 #' @param hessian Logical, whether to pass the Hessian function `obj$he` to [stats::nlminb()]. Only used if
 #' there are no random effects in the model.
-#' @param restart Integer, the maximum number of additional attempts to fit the model. See details.
-#' @param do_sd Logical, whether to calculate standard errors through [get_sdreport()]
+#' @param restart Deprecated.
+#' @param do_sd Deprecated.
 #' @param control List of options passed to [stats::nlminb()]
 #' @param lower Lower bounds of parameters passed to [stats::nlminb()]
 #' @param upper Upper bounds of parameters passed to [stats::nlminb()]
 #' @param silent Logical, whether to report progress to console
-#' @return A named list: "opt" is the output of [stats::nlminb()] and "SD" is the output of [get_sdreport()]
-#' @details
-#' Argument `restart` allows for recursive model fitting to obtain convergence, through the following procedure:
-#' 1. Optimize model with [stats::nlminb()].
-#' 2. Determine convergence, defined by [RTMB::sdreport()] by whether the Cholesky decomposition of the covariance matrix is possible.
-#' 3. If convergence is not achieved, jitter parameter estimates with multiplicative factor `rlnorm(mean = 0, sd = 1e-3)` and return to step 1.
-#' @importFrom stats nlminb rnorm
+#' @return A named list, output of [stats::nlminb()]
+#' @importFrom stats nlminb
 #' @seealso [get_sdreport()]
 #' @keywords internal
 #' @export
 optimize_RTMB <- function(obj, hessian = FALSE, restart = 0, do_sd = TRUE,
                           control = list(iter.max = 2e+05, eval.max = 4e+05),
                           lower = -Inf, upper = Inf, silent = FALSE) {
-  restart <- as.integer(restart)
 
-  if (is.null(obj$env$random) && hessian) h <- obj$he else h <- NULL
+  if (is.null(obj$env$random) && hessian) {
+    h <- obj$he
+    if (!silent) message("Using hessian in optimization (can be memory-intensive)")
+  } else {
+    h <- NULL
+  }
 
   if (!silent) message_info("Fitting model with stats::nlminb()..")
   opt <- tryCatch(
@@ -171,82 +170,82 @@ optimize_RTMB <- function(obj, hessian = FALSE, restart = 0, do_sd = TRUE,
   )
   if (!silent) message_info("Final gradient is ", round(max(abs(obj$gr(obj$env$last.par.best))), 5))
 
-  if (do_sd) {
-    SD <- get_sdreport(obj, silent = silent)
-
-    if (!SD$pdHess && restart > 0) {
-      if (!is.character(opt)) obj$par <- opt$par * exp(rnorm(length(opt$par), 0, 1e-3))
-      Recall(obj, hessian, restart - 1, do_sd, control, lower, upper, silent)
-    } else {
-      return(list(opt = opt, SD = SD))
-    }
-  } else {
-    return(list(opt = opt, SD = NULL))
-  }
+  return(opt)
 }
 
-check_det <- function(h, abs_val = 0.1, is_null = TRUE) {
-  if (is.null(h)) return(is_null)
-  det_h <- det(h) %>% abs()
-  !is.na(det_h) && det_h < abs_val
+# Check that hessian is positive-definite
+check_h <- function(h) {
+  L <- try(chol(h), silent = TRUE)
+  !is.character(L)
+}
+
+# Check that hessian could be marginally positive-definite: abs(det(h)) < tol
+marginal_h <- function(h, tol = 0.1) {
+  det_h <- determinant(h)
+  !is.na(det_h$modulus) && det_h$modulus < log(tol)
 }
 
 #' Calculate standard errors
 #'
 #' A wrapper function to return standard errors. Various numerical techniques are employed to obtain
-#' a positive-definite covariance matrix.
+#' a positive-definite covariance matrix in marginal cases.
 #' @inheritParams optimize_RTMB
+#' @param par.fixed Numeric vector of parameters from which to calculate covariance matrix. Optional
+#' @param exact Logical, whether to use autodiff or finite-difference approximation for the hessian. See details.
 #' @param getReportCovariance Logical, passed to [RTMB::sdreport()]
 #' @param silent Logical, whether to report progress to console. See details.
 #' @param ... Other arguments to [RTMB::sdreport()] besides `par.fixed, hessian.fixed, getReportCovariance`
 #' @details
-#' In marginal cases where the determinant of the Hessian matrix is less than 0.1, several steps are utilized to
-#' obtain a positive-definite covariance matrix, in the following order:
-#' 1. Invert hessian returned by `h <- obj@he(obj$env.last.par.best)` (skipped in models with random effects)
-#' 2. Invert hessian returned by `h <- stats::optimHess(obj$env.last.par.best, obj$fn, obj$gr)`
-#' 3. Invert hessian returned by `h <- numDeriv::jacobian(obj$gr, obj$env.last.par.best)`
-#' 4. Calculate covariance matrix from `chol2inv(chol(h))`
+#' Uses [stats::optimHess()] if `exact = FALSE`.
+#' Autodiff with `exact = TRUE` is only available for TMB models without random effects, but is also memory-intensive.
+#'
+#' In numerically marginal cases where the determinant of the Hessian matrix is less than 0.1, the function will attempt
+#' to calculate the hessian with `numDeriv::jacobian()` and the gradient from TMB.
+#'
+#' Finally, in other marginal cases where [chol()] identifies a positive-definite Hessian but [solve()] fails to
+#' invert the matrix, the covariance matrix will be updated with `chol2inv(chol(h))`
 #' @return
-#' Object returned by [RTMB::sdreport()]. A correlation matrix is generated and stored in: `get_sdreport(obj)$env$corr.fixed`
+#' Object returned by [RTMB::sdreport()].
+#'
+#' A correlation matrix is generated and stored in: `get_sdreport(obj)$env$corr.fixed`
+#'
+#' The hessian is stored in `get_sdreport(obj)$env$hessian`
 #' @importFrom stats optimHess
 #' @export
-get_sdreport <- function(obj, getReportCovariance = FALSE, silent = FALSE, ...) {
-  #old_comparison <- TapeConfig()["comparison"]
-  #on.exit(TapeConfig(comparison = old_comparison), add = TRUE)
-  #TapeConfig(comparison = "tape")
-
-  par.fixed <- obj$env$last.par.best
-
-  if (is.null(obj$env$random)) {
-    h <- obj$he(par.fixed)
-    if (any(is.na(h)) || any(is.infinite(h)) || check_det(h)) {
-      h <- NULL
-    } else {
-      if (!silent) message_info("Calculating standard errors with hessian from obj$he()..")
-      res <- sdreport(obj, par.fixed = par.fixed, hessian.fixed = h,
-                      getReportCovariance = getReportCovariance, ...)
-    }
-  } else {
-    par.fixed <- par.fixed[-obj$env$random]
-    #par.fixed <- par.fixed[obj$env$lfixed()]
-    h <- NULL
+get_sdreport <- function(obj, par.fixed, exact = FALSE, getReportCovariance = FALSE, silent = FALSE, ...) {
+  if (missing(par.fixed)) {
+    par.fixed <- obj$env$last.par.best
+    if (!is.null(obj$env$random)) par.fixed <- par.fixed[-obj$env$random]
   }
 
-  if (is.null(h) || check_det(h)) {  # If hessian doesn't exist or marginal positive-definite cases, with -0.1 < det(h) <= 0
+  if (exact && is.null(obj$env$random)) {
+    if (!silent) message_info("Calculating standard errors with hessian from obj$he()..")
+    h <- obj$he(par.fixed)
+  } else {
     if (!silent) message_info("Calculating standard errors with hessian from stats::optimHess()..")
     h <- optimHess(par.fixed, obj$fn, obj$gr)
-    res <- sdreport(obj, par.fixed = par.fixed, hessian.fixed = h,
-                    getReportCovariance = getReportCovariance, ...)
+  }
+  res <- sdreport(obj, par.fixed = par.fixed, hessian.fixed = h,
+                  getReportCovariance = getReportCovariance, ...)
+
+  if (!res$pdHess) {
+    if (!silent) message_oops("Hessian is not positive-definite.")
+
+    if (marginal_h(h) && requireNamespace("numDeriv", quietly = TRUE)) {
+      if (!silent) message_info("Calculating standard errors with hessian from numDeriv::jacobian()..")
+      h <- numDeriv::jacobian(obj$gr, par.fixed)
+      h <- 0.5 * (h + t(h)) # glmmTMB does this
+
+      if (check_h(h)) {
+        res <- sdreport(obj, par.fixed = par.fixed, hessian.fixed = h,
+                        getReportCovariance = getReportCovariance, ...)
+      } else if (!silent) {
+        message_oops("Hessian is not positive-definite.")
+      }
+    }
   }
 
-  if (check_det(h) && !res$pdHess && requireNamespace("numDeriv", quietly = TRUE)) {
-    if (!silent) message_info("Calculating standard errors with hessian from numDeriv::jacobian()..")
-    h <- numDeriv::jacobian(obj$gr, par.fixed)
-    res <- sdreport(obj, par.fixed = par.fixed, hessian.fixed = h,
-                    getReportCovariance = getReportCovariance, ...)
-  }
-
-  if (all(is.na(res$cov.fixed)) && res$pdHess) {
+  if (any(is.na(res$cov.fixed)) && res$pdHess) {
     if (!silent) message_info("Calculating standard errors from chol2inv(chol(h))..")
     ch <- try(chol(h), silent = TRUE) # Not needed, this is the test for convergence in sdreport
     if (!is.character(ch)) res$cov.fixed <- chol2inv(ch)
@@ -254,20 +253,11 @@ get_sdreport <- function(obj, getReportCovariance = FALSE, silent = FALSE, ...) 
 
   fixed.names <- make_unique_names(res, select = "fixed")
 
-  res$env$corr.fixed <- cov2cor(res$cov.fixed) %>% round(3) %>%
+  res$env$corr.fixed <- cov2cor(res$cov.fixed) |> round(3) |>
     structure(dimnames = list(fixed.names, fixed.names))
 
-  res$env$hessian <- round(h, 3) %>%
+  res$env$hessian <- round(h, 3) |>
     structure(dimnames = list(fixed.names, fixed.names))
-
-  if (!res$pdHess) {
-    if (!silent) {
-      message_oops("Check convergence. Covariance matrix is not positive-definite.")
-      if (exists("h", inherits = FALSE) && !is.null(h)) {
-        message_info("Determinant of Hessian is ", signif(det(h), 5), ", should be > 0")
-      }
-    }
-  }
 
   return(res)
 }
@@ -278,17 +268,17 @@ sdreport_int <- function(object, select = c("all", "fixed", "random", "report"),
   select <- match.arg(select, several.ok = TRUE)
   if ("all" %in% select) select <- c("fixed", "random", "report")
   if ("report" %in% select) {
-    AD <- TMB::summary.sdreport(object, "report", p.value = p.value) %>% cbind("Gradient" = NA_real_)
+    AD <- TMB::summary.sdreport(object, "report", p.value = p.value) |> cbind("Gradient" = NA_real_)
     ADnames <- make_unique_names(object, select = "report")
   } else AD <- ADnames <- NULL
 
   if ("fixed" %in% select) {
-    fix <- TMB::summary.sdreport(object, "fixed", p.value = p.value) %>% cbind("Gradient" = as.vector(object$gradient.fixed))
+    fix <- TMB::summary.sdreport(object, "fixed", p.value = p.value) |> cbind("Gradient" = as.vector(object$gradient.fixed))
     fixnames <- make_unique_names(object, select = "fixed")
   } else fix <- fixnames <- NULL
 
   if (!is.null(object$par.random) && "random" %in% select) {
-    random <- TMB::summary.sdreport(object, "random", p.value = p.value) %>% cbind("Gradient" = rep(NA_real_, length(object$par.random)))
+    random <- TMB::summary.sdreport(object, "random", p.value = p.value) |> cbind("Gradient" = rep(NA_real_, length(object$par.random)))
     randomnames <- make_unique_names(object, select = "random")
   } else {
     random <- randomnames <- NULL
@@ -383,7 +373,7 @@ collapse_yearseason <- function(x) {
     x_df <- reshape2::melt(x)
     x_df$Y <- as.numeric(x_df$Var1) + (as.numeric(x_df$Var2) - 1)/dim_x[2]
 
-    dims <- c("Y", paste0("Var", 3:length(dim_x))) %>% as.list()
+    dims <- c("Y", paste0("Var", 3:length(dim_x))) |> as.list()
     xout <- reshape2::acast(x_df, dims, value.var = "value")
     dimnames(xout) <- NULL
 
@@ -397,7 +387,7 @@ collapse_yearseason <- function(x) {
 message <- function(...) {
   if (requireNamespace("usethis", quietly = TRUE)) {
     dots <- list(...)
-    do.call(c, dots) %>% paste0(collapse = "") %>% usethis::ui_done()
+    do.call(c, dots) |> paste0(collapse = "") |> usethis::ui_done()
   } else {
     base::message(...)
   }
@@ -407,7 +397,7 @@ message <- function(...) {
 message_info <- function(...) {
   if (requireNamespace("usethis", quietly = TRUE)) {
     dots <- list(...)
-    do.call(c, dots) %>% paste0(collapse = "") %>% usethis::ui_info()
+    do.call(c, dots) |> paste0(collapse = "") |> usethis::ui_info()
   } else {
     base::message(...)
   }
@@ -416,7 +406,7 @@ message_info <- function(...) {
 message_oops <- function(...) {
   if (requireNamespace("usethis", quietly = TRUE)) {
     dots <- list(...)
-    do.call(c, dots) %>% paste0(collapse = "") %>% usethis::ui_oops()
+    do.call(c, dots) |> paste0(collapse = "") |> usethis::ui_oops()
   } else {
     base::message(...)
   }
@@ -425,7 +415,7 @@ message_oops <- function(...) {
 warning <- function(...) {
   if (requireNamespace("usethis", quietly = TRUE)) {
     dots <- list(...)
-    do.call(c, dots) %>% paste0(collapse = "") %>% usethis::ui_warn()
+    do.call(c, dots) |> paste0(collapse = "") |> usethis::ui_warn()
   } else {
     base::warning(...)
   }
@@ -435,7 +425,7 @@ warning <- function(...) {
 stop <- function(..., call. = TRUE, domain = NULL) {
   if (requireNamespace("usethis", quietly = TRUE)) {
     dots <- list(...)
-    do.call(c, dots) %>% paste0(collapse = "") %>% usethis::ui_stop()
+    do.call(c, dots) |> paste0(collapse = "") |> usethis::ui_stop()
   } else {
     base::stop(..., call. = call., domain = domain)
   }

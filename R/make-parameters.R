@@ -189,7 +189,7 @@ make_parameters <- function(MSAdata, start = list(), map = list(),
               rep(0, nl)
             }
           })
-        }) %>% apply(1, sum)
+        }) |> apply(1, sum)
 
         if (sum(CAL)) {
           LFS <- min(Dmodel@lmid[which.max(CAL)], 0.75 * max(Dmodel@lmid))
@@ -210,7 +210,7 @@ make_parameters <- function(MSAdata, start = list(), map = list(),
               rep(0, na)
             }
           })
-        }) %>% apply(1, sum)
+        }) |> apply(1, sum)
 
         if (sum(CAA)) {
           age <- 1:na
@@ -283,7 +283,8 @@ make_parameters <- function(MSAdata, start = list(), map = list(),
   if (is.null(p$log_initF_mfr)) p$log_initF_mfr <- array(-1000, c(nm, nf, nr))
 
   if (is.null(p$log_initrdev_as)) {
-    p$log_initrdev_as <- matrix(0, na-1, ns)
+    na_init <- ifelse(Dstock@m_advanceage > 1, Dmodel@na, Dmodel@na-1)
+    p$log_initrdev_as <- matrix(0, na_init, ns)
   }
 
   do_map <- make_map(p, MSAdata, map = map, est_mov = est_mov, silent = silent, ...)
@@ -357,7 +358,7 @@ make_map <- function(p, MSAdata, map = list(),
 
   if (!est_h && is.null(map$t_h_s)) map$t_h_s <- rep(NA, ns)
   if (!silent) {
-    h_s <- sapply(1:ns, function(s) conv_steepness(p$t_h_s[s], Dstock@SRR_s[s])) %>% signif(4)
+    h_s <- sapply(1:ns, function(s) conv_steepness(p$t_h_s[s], Dstock@SRR_s[s])) |> signif(4)
     if (is.null(map$t_h_s)) {
       message_info("Estimating t_h_s (steepness), starting value = ", paste(h_s, collapse = ", "))
     } else {
@@ -462,8 +463,8 @@ make_map <- function(p, MSAdata, map = list(),
                 gind_strat <- expand.grid(m = 1:nm, r = r_eff, s = s, yc = i, ac = j)
                 gind_strat$par_no <- 1:nrow(gind_strat)
 
-                gind <- expand.grid(y = yy, m = 1:nm, a = aa, r = r_eff, s = s, yc = i, ac = j) %>%
-                  merge(gind_strat) %>%
+                gind <- expand.grid(y = yy, m = 1:nm, a = aa, r = r_eff, s = s, yc = i, ac = j) |>
+                  merge(gind_strat) |>
                   as.matrix()
 
                 if (all(is.na(map$mov_g_ymars))) {
@@ -515,8 +516,8 @@ make_map <- function(p, MSAdata, map = list(),
                   vind_strat <- expand.grid(m = 1:nm, yc = i, ac = j)
                   vind_strat$par_no <- 1:nrow(vind_strat)
 
-                  vind <- expand.grid(y = yy, m = 1:nm, a = aa, s = s, yc = i, ac = j) %>%
-                    merge(vind_strat) %>%
+                  vind <- expand.grid(y = yy, m = 1:nm, a = aa, s = s, yc = i, ac = j) |>
+                    merge(vind_strat) |>
                     as.matrix()
 
                   if (all(is.na(map$mov_v_ymas))) {
@@ -628,7 +629,7 @@ make_map <- function(p, MSAdata, map = list(),
     } else {
       1:ny
     }
-    no_blocks <- apply(Dfishery@sel_block_yf, 2, function(x) length(unique(x)) == 1) %>% all()
+    no_blocks <- apply(Dfishery@sel_block_yf, 2, function(x) length(unique(x)) == 1) |> all()
     for (bb in unique(as.numeric(Dfishery@sel_block_yf))) {
 
       if (no_blocks) {
@@ -669,15 +670,15 @@ make_map <- function(p, MSAdata, map = list(),
           yy <- y[Dfishery@sel_block_yf[, ff] == bb]
           if (length(yy)) {
             if (all(diff(y) == 1)) {
-              paste0(ff, " (", range(yy) %>% paste(collapse = "-"), ")")
+              paste0(ff, " (", range(yy) |> paste(collapse = "-"), ")")
             } else {
-              paste0(ff, " (", range(yy) %>% paste(collapse = "-"), ", with gaps)")
+              paste0(ff, " (", range(yy) |> paste(collapse = "-"), ", with gaps)")
             }
           } else {
             NULL
           }
         })
-        message_info("Block ", bb, " (", Dfishery@sel_f[bb], ") assigned to fleet:\n", do.call(c, fleet) %>% paste(collapse = "\n"))
+        message_info("Block ", bb, " (", Dfishery@sel_f[bb], ") assigned to fleet:\n", do.call(c, fleet) |> paste(collapse = "\n"))
       }
 
       if (grepl("logistic", Dfishery@sel_f[bb])) {
@@ -787,7 +788,10 @@ make_map <- function(p, MSAdata, map = list(),
     message_info("Initial equilibrium F will be estimated")
   }
 
-  if (is.null(map$log_initrdev_as)) map$log_initrdev_as <- factor(matrix(NA, na-1, ns))
+  if (is.null(map$log_initrdev_as)) {
+    na_init <- ifelse(Dstock@m_advanceage > 1, na, na-1)
+    map$log_initrdev_as <- factor(matrix(NA, na_init, ns))
+  }
   if (!silent && (is.null(map$log_initrdev_as) || any(!is.na(map$log_initrdev_as)))) {
     message_info("Year 1 recruitment deviations will be estimated")
   }

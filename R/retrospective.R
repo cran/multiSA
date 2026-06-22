@@ -13,20 +13,24 @@
 #' - `VB_ymft` Vulnerable biomass available to each fishery `[y, m, f, t]`
 #' @param MSAassess [MSAassess-class] object
 #' @param yret Vector specifying the years (positive integers and include zero) to remove for the retrospective analysis
-#' @param cores Integer for the number of cores to use for parallel processing (snowfall package)
+#' @param cores Integer for the number of cores to use for parallel processing
 #' @export
-#' @import snowfall
+#' @importFrom parallel makeCluster stopCluster
 retrospective <- function(MSAassess, yret = 0:5, cores = 1) {
 
-  if (cores > 1 && !snowfall::sfIsRunning()) {
-    snowfall::sfInit(parallel = TRUE, cpus = cores)
-    on.exit(snowfall::sfStop())
+  if (cores > 1) {
+    cl <- parallel::makeCluster(cores)
+    on.exit(parallel::stopCluster(cl), add = TRUE)
+  } else {
+    cl <- NULL
   }
 
-  .lapply <- pbapply::pblapply
-  if (snowfall::sfIsRunning()) formals(.lapply)$cl <- substitute(snowfall::sfGetCluster())
+  old_opts <- pbapply::pboptions()
+  on.exit(pbapply::pboptions(old_opts), add = TRUE)
 
-  ret <- .lapply(yret, .ret, MSAassess)
+  pbapply::pboptions(use_lb = TRUE)
+
+  ret <- pbapply::pblapply(yret, .ret, MSAassess, cl = cl)
 
   MSAdata <- get_MSAdata(MSAassess)
   ny <- MSAdata@Dmodel@ny
@@ -50,7 +54,7 @@ retrospective <- function(MSAassess, yret = 0:5, cores = 1) {
   VB_ymft[] <- sapply2(ret, function(x) apply(x@report$VB_ymfrs, 1:3, sum))
 
   ret_out <- list(S_yst = S_yst, R_yst = R_yst, F_yst = F_yst, VB_ymft = VB_ymft,
-                  log_rdev_yst = log_rdev_yst) %>%
+                  log_rdev_yst = log_rdev_yst) |>
     structure(class = "MSAretro")
   attr(ret_out, "Dlabel") <- MSAdata@Dlabel
   attr(ret_out, "yret") <- yret
@@ -75,7 +79,7 @@ retrospective <- function(MSAassess, yret = 0:5, cores = 1) {
       } else {
         map[[i]]
       }
-    }) %>%
+    }) |>
       structure(names = names(map))
   } else {
     map_dim <- list()
@@ -160,9 +164,9 @@ summary.MSAretro <- function(object, by = c("stock", "fleet"), ...) {
 
     x <- object[grepl("yst", names(object))]
 
-    rho <- sapply(x, function(i) apply(i, 2, Mohn_rho, peel)) %>%
-      t() %>%
-      matrix(length(x), ns) %>%
+    rho <- sapply(x, function(i) apply(i, 2, Mohn_rho, peel)) |>
+      t() |>
+      matrix(length(x), ns) |>
       structure(dimnames = list(sapply(names(x), retro_label), sname))
   } else {
     fname <- attr(object, "Dlabel")@fleet
@@ -175,10 +179,10 @@ summary.MSAretro <- function(object, by = c("stock", "fleet"), ...) {
 
     # First season
     rho <- sapply(x, function(i) {
-      array(i[, 1, , ], c(ny, nf, nt)) %>% apply(2, Mohn_rho, peel)
-    }) %>%
-      t() %>%
-      matrix(length(x), nf) %>%
+      array(i[, 1, , ], c(ny, nf, nt)) |> apply(2, Mohn_rho, peel)
+    }) |>
+      t() |>
+      matrix(length(x), nf) |>
       structure(dimnames = list(sapply(names(x), retro_label), fname))
   }
   return(rho)
@@ -210,7 +214,7 @@ report.MSAretro <- function(object, filename = "retro", dir = tempdir(), open_fi
   sname <- attr(object, "Dlabel")@stock
   fname <- attr(object, "Dlabel")@fleet
 
-  rmd <- system.file("include", "retrospective.Rmd", package = "multiSA") %>% readLines()
+  rmd <- system.file("include", "retrospective.Rmd", package = "multiSA") |> readLines()
   rmd_split <- split(rmd, 1:length(rmd))
 
   fleet_ind <- grep("*ADD FLEET RMD*", rmd)

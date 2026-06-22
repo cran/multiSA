@@ -17,8 +17,10 @@
 #' @param control Passed to [stats::nlminb()]
 #' @param ... Other arguments to [RTMB::MakeADFun()].
 #' @returns A [MSAassess-class] object.
+#' @details
+#' When re-fitting a model, you may want to update the starting values through `x@obj$par`.
 #' @importFrom methods new
-#' @seealso [report()] [retrospective()]
+#' @seealso [report()] [retrospective()] [do_jitter()]
 #' @export
 fit_MSA <- function(x, parameters, map = list(), random = NULL,
                     run_model = TRUE, do_sd = TRUE, report = TRUE, silent = FALSE,
@@ -74,18 +76,34 @@ fit_MSA <- function(x, parameters, map = list(), random = NULL,
   M <- new("MSAassess", obj = obj)
 
   if (run_model) {
-    m <- optimize_RTMB(obj, do_sd = do_sd, control = control, silent = silent)
-    if (is.character(m$opt)) {
-      message_oops("Error message from optimization:\n", m$opt)
-    } else {
-      M@opt <- m$opt
+    if (!silent) time <- proc.time()
+
+    opt <- optimize_RTMB(M@obj, do_sd = do_sd, control = control, silent = silent)
+
+    if (!silent) {
+      time_fit <- c(proc.time() - time)["elapsed"]
+      message_info("Run time: ", floor(time_fit/60), " minutes, ", round(time_fit %% 60), " seconds")
     }
-    if (do_sd) M@SD <- m$SD
+    if (is.character(opt)) {
+      message_oops("Error message from optimization:\n", opt)
+    } else {
+      M@opt <- opt
+    }
+  }
+  if (do_sd) {
+    if (!silent) time <- proc.time()
+
+    M@SD <- get_sdreport(obj, silent = silent)
+
+    if (!silent) {
+      time_fit <- c(proc.time() - time)["elapsed"]
+      message_info("Run time: ", floor(time_fit/60), " minutes, ", round(time_fit %% 60), " seconds")
+    }
   }
 
   if (report) {
     if (!silent) message("Generating report list..")
-    M@report <- update_report(obj$report(obj$env$last.par.best), MSAdata = x)
+    M@report <- update_report(obj$report(obj$env$last.par.best), MSAdata = get_MSAdata(M))
   }
   if (!silent) message("Complete.")
   return(M)
@@ -207,7 +225,7 @@ update_report <- function(r, MSAdata) {
   }
 
   if (any_CAL || (any_IAL && any(is_IALfsel_i))) {
-    LAKsel_ymalfs <- array(NA_real_, c(ny, nm, na, nl, ns, nf)) %>%
+    LAKsel_ymalfs <- array(NA_real_, c(ny, nm, na, nl, ns, nf)) |>
       aperm(c(1:4, 6, 5))
   }
 
@@ -219,7 +237,7 @@ update_report <- function(r, MSAdata) {
 
     if (any_IAL) {
       IN_ymlis <- array(NA_real_, c(ny, nm, nl, ni, ns))
-      LAKsel_ymalis <- array(NA_real_, c(ny, nm, na, nl, ns, ni)) %>%
+      LAKsel_ymalis <- array(NA_real_, c(ny, nm, na, nl, ns, ni)) |>
         aperm(c(1:4, 6, 5))
     }
   }
@@ -280,32 +298,20 @@ update_report <- function(r, MSAdata) {
   }
 
   ## Fishery and index selectivity ----
-  # Check for length-based selectivity (through time blocks)
-  tv_flensel <- any(
-    sapply(1:nf, function(f) {
-      bb <- Dfishery@sel_block_yf[, f]
-      lensel <- any(grepl("length", Dfishery@sel_f[bb]))
-      change_sel <- length(unique(bb)) > 1
-      change_sel || lensel
-    })
-  )
 
   for (s in 1:ns) {
     # Fishery selectivity
 
-    # Check for time-varying growth only if there are length-based sel functions
-    if (tv_flensel) {
-      tv_growth <- any(sapply(2:ny, function(y) max(Dstock@LAK_ymals[y, , , , s] - Dstock@LAK_ymals[1, , , , s])) > 0)
-      tv_fagesel_growth <- tv_growth
-    } else {
-      tv_fagesel_growth <- FALSE
-    }
+    # Check for time-varying growth only if length-based sel
+    tv_growth <- any(sapply(2:ny, function(y) max(Dstock@LAK_ymals[y, , , , s] - Dstock@LAK_ymals[1, , , , s])) > 0)
+    tv_flensel_growth <- tv_growth && any(grepl("length", Dfishery@sel_f))
 
-    # Check for time-varying maturity
+    # Check for time-varying sel due to tv maturity
     tv_mat <- any(sapply(2:ny, function(y) max(mat_yas[y, , s] - mat_yas[1, , s])) > 0)
     tv_fsel_mat <- tv_mat && any(Dfishery@sel_f == "SB")
 
-    if (tv_fagesel_growth || tv_fsel_mat) { # Slow method by individual time step
+    # Slower method by individual time step for now if tv growth or maturity
+    if (tv_flensel_growth || tv_fsel_mat) {
       for (y in 1:ny) {
         for (m in 1:nm) {
           sel_ymafs[y, m, , , s] <- calc_fsel_age(
@@ -313,15 +319,26 @@ update_report <- function(r, MSAdata) {
           )
         }
       }
-    } else { # Fast way
-      for (m in 1:nm) {
-        sel_ymafs[1, m, , , s] <- calc_fsel_age(
-          sel_lf, Dstock@LAK_ymals[1, m, , , s], Dfishery@sel_f, selconv_pf, Dfishery@sel_block_yf[1, ], mat = mat_yas[1, , s], a = seq(1, na) - 1
-        )
+    } else { # Fill in sel array by unique rows of sel blocks
+
+      sel_block_y <- sapply(1:ny, function(y) Reduce("paste0", Dfishery@sel_block_yf[y, ]))
+      sel_block_unique <- unique(sel_block_y)
+
+      for (j in 1:length(sel_block_unique)) {
+        y_j <- which(sel_block_y == sel_block_unique[j])
+        for (m in 1:nm) {
+          sel_ymafs[y_j[1], m, , , s] <- calc_fsel_age(
+            sel_lf, Dstock@LAK_ymals[y_j[1], m, , , s], Dfishery@sel_f, selconv_pf, Dfishery@sel_block_yf[y_j[1], ],
+            mat = mat_yas[y_j[1], , s], a = seq(1, na) - 1
+          )
+        }
+        if (length(y_j) > 1) {
+          fsel_ind <- fsel1_ind <- as.matrix(expand.grid(y = y_j[-1], m = 1:m, a = 1:na, f = 1:nf, s = s))
+          fsel1_ind[, "y"] <- y_j[1]
+          sel_ymafs[fsel_ind] <- sel_ymafs[fsel1_ind]
+        }
       }
-      fsel_ind <- fsel1_ind <- as.matrix(expand.grid(y = 2:ny, m = 1:m, a = 1:na, f = 1:nf, s = s))
-      fsel1_ind[, "y"] <- 1
-      sel_ymafs[fsel_ind] <- sel_ymafs[fsel1_ind]
+
     }
 
     # Survey selectivity
@@ -394,8 +411,8 @@ update_report <- function(r, MSAdata) {
 
   if (nm == 1 && nr == 1) {
     nyinit <- 1L
-    NPR0_mars <- sapply2(1:ns, function(s) calc_NPR(M_yas[Dmodel@y_phi, , s])) %>%
-      array(c(na, ns, nm, nr)) %>%
+    NPR0_mars <- sapply2(1:ns, function(s) calc_NPR(M_yas[Dmodel@y_phi, , s])) |>
+      array(c(na, ns, nm, nr)) |>
       aperm(c(3, 1, 4, 2))
     phi_s <- sapply(1:ns, function(s) {
       calc_phi_simple(M_yas[Dmodel@y_phi, , s], mat_a = mat_yas[Dmodel@y_phi, , s], fec_a = Dstock@fec_yas[Dmodel@y_phi, , s],
@@ -428,25 +445,25 @@ update_report <- function(r, MSAdata) {
     bcr_ys[is.na(map$log_rdev_ys)] <- 0
   }
 
-  par_initrdev_as <- matrix(TRUE, na-1, ns)
+  na_init <- ifelse(Dstock@m_advanceage > 1, na, na-1)
+  par_initrdev_as <- matrix(TRUE, na_init, ns)
   bcrinit_as <- sapply(1:ns, function(s) bcr_s[s] * Dmodel@pbc_initrdev_as[, s])
   if (!is.null(map$log_initrdev_as)) {
-    par_initrdev_as[] <- matrix(!is.na(map$log_initrdev_as) & !duplicated(map$log_initrdev_as, MARGIN = 0), na-1, ns)
+    par_initrdev_as[] <- matrix(!is.na(map$log_initrdev_as) & !duplicated(map$log_initrdev_as, MARGIN = 0), na_init, ns)
     bcrinit_as[is.na(map$log_initrdev_as)] <- 0
   }
+
   Rdev_ys[] <- exp(p$log_rdev_ys + bcr_ys)
 
   ## Miscellaneous penalty term, e.g., F > Fmax
   penalty <- 0
 
   # First year, first season initialization ----
-  initRdev_as <- matrix(NA_real_, na, ns)
-  initRdev_as[-1, ] <- exp(p$log_initrdev_as + bcrinit_as)
-  initRdev_as[1, ] <- Rdev_ys[1, ]
+  initRdev_as <- exp(p$log_initrdev_as + bcrinit_as)
   initF_mfr <- array(NA_real_, c(nm, nf, nr))
 
   initNPR_mars <- array(NA_real_, c(nm, na, nr, ns))
-  initNeq_mars <- initN_mars <- array(NA_real_, c(nm, na, nr, ns))
+  initNeq_mars <- array(NA_real_, c(nm, na, nr, ns))
   initN_ars <- array(NA_real_, c(na, nr, ns))
 
   initZ_mars <- array(NA_real_, c(nm, na, nr, ns))
@@ -457,7 +474,6 @@ update_report <- function(r, MSAdata) {
   if (all(Dfishery@Cinit_mfr <= 1e-8)) {
     initF_mfr[] <- 0
     initNPR_mars[] <- NPR0_mars
-    initN_mars[] <- initN_mars
     initphi_s <- phi_s
     initReq_s <- R0_s
     initNeq_mars[] <- N0_mars
@@ -481,7 +497,7 @@ update_report <- function(r, MSAdata) {
     ind <- as.matrix(expand.grid(m = 1:nm, a = 1:na, f = 1:nf, r = 1:nr, s = 1:ns))
     mfr_mafrs <- ind[, c("m", "f", "r")]
     mars_mafrs <- ind[, c("m", "a", "r", "s")]
-    initCN_mafrs[] <- initF_mfr[mfr_mafrs]/initZ_mars[mars_mafrs] * (1 - exp(-initZ_mars[mars_mafrs])) * initN_mars[mars_mafrs]
+    initCN_mafrs[] <- initF_mfr[mfr_mafrs]/initZ_mars[mars_mafrs] * (1 - exp(-initZ_mars[mars_mafrs])) * initNeq_mars[mars_mafrs]
 
     initCB_mfrs[] <- 0
     ind <- as.matrix(expand.grid(y = 1, m = 1:nm, a = 0, f = 1:nf, r = 1:nr, s = 1:ns))
@@ -524,10 +540,14 @@ update_report <- function(r, MSAdata) {
   }
 
   # Initial abundance ----
-  ind <- as.matrix(expand.grid(m = 1:nm, a = 1:na, r = 1:nr, s = 1:ns))
+  ind <- as.matrix(expand.grid(m = 1, a = 1:na, r = 1:nr, s = 1:ns))
   as_ind <- ind[, c("a", "s")]
-  initN_mars[] <- initRdev_as[as_ind] * initNeq_mars[ind]
-  initN_ars[] <- initN_mars[1, , , ]
+  if (Dstock@m_advanceage > 1) {
+    initN_ars[] <- initRdev_as[as_ind] * initNeq_mars[ind]
+  } else {
+    initN_ars[-1, , ] <- sapply2(1:ns, function(s) array(initRdev_as[, s] * initNeq_mars[1, -1, , s], c(na-1, nr)))
+    initN_ars[1, , ] <- 0
+  }
 
   # Run population model ----
   pop <- calc_population(
@@ -556,7 +576,7 @@ update_report <- function(r, MSAdata) {
   ind_ymars <- as.matrix(expand.grid(y = 1:ny, m = 1:nm, a = 1:na, r = 1:nr, s = 1:ns))
   ymas_ymars <- ind_ymars[, c("y", "m", "a", "s")]
 
-  B_ymrs[] <- array(N_ymars[ind_ymars] * Dstock@swt_ymas[ymas_ymars], c(ny, nm, na, nr, ns)) %>%
+  B_ymrs[] <- array(N_ymars[ind_ymars] * Dstock@swt_ymas[ymas_ymars], c(ny, nm, na, nr, ns)) |>
     apply(c(1, 2, 4, 5), sum)
 
   # Likelihoods ----
@@ -569,7 +589,10 @@ update_report <- function(r, MSAdata) {
 
     if ((nm == 1 && nr == 1) || Dmodel@condition == "F") {
       Cinit_mfr <- OBS(Cinit_mfr)
-      loglike_Cinit_mfr <- dnorm(log(Cinit_mfr/initCB_mfr), 0, 0.01, log = TRUE)
+
+      lambda_Cinit <- array(Dfishery@lambdaCobs_f, c(nf, nm, nr)) |> aperm(c(2, 1, 3))
+
+      loglike_Cinit_mfr <- lambda_Cinit * dnorm(log(Cinit_mfr/initCB_mfr), 0, 0.01, log = TRUE)
       loglike_Cinit_mfr[Cinit_mfr <= 1e-8] <- 0
     } else {
       loglike_Cinit_mfr <- 0
@@ -585,8 +608,10 @@ update_report <- function(r, MSAdata) {
     CB_ymfr <- apply(CB_ymfrs, 1:4, sum)
     Cobs_ymfr <- OBS(Cobs_ymfr)
 
+    lambda_Cobs <- array(Dfishery@lambdaCobs_f, c(nf, ny, nm, nr)) |> aperm(c(2, 3, 1, 4))
+
     loglike_Cobs_ymfr <- array(0, c(ny, nm, nf, nr))
-    loglike_Cobs_ymfr[] <- dnorm(log(Cobs_ymfr/CB_ymfr), 0, Dfishery@Csd_ymfr, log = TRUE)
+    loglike_Cobs_ymfr[] <- lambda_Cobs * dnorm(log(Cobs_ymfr/CB_ymfr), 0, Dfishery@Csd_ymfr, log = TRUE)
     loglike_Cobs_ymfr[Cobs_ymfr <= 1e-8] <- 0
     loglike_Cobs_ymfr[1:ny > max(y_like), , , ] <- 0
   } else {
@@ -600,16 +625,16 @@ update_report <- function(r, MSAdata) {
     CN_ymafr <- apply(CN_ymafrs, 1:5, sum)
     CAAobs_ymafr <- OBS(CAAobs_ymafr)
 
+    lambda_CAA <- array(Dfishery@lambdaCAA_f, c(nf, length(y_like), nm, nr)) |> aperm(c(2, 3, 1, 4))
+
     loglike_CAA_ymfr <- array(0, c(ny, nm, nf, nr))
-    loglike_CAA_ymfr[y_like, , , ] <- sapply2(1:nr, function(r) {
+    loglike_CAA_ymfr[y_like, , , ] <- lambda_CAA * sapply2(1:nr, function(r) {
       sapply2(1:nf, function(f) {
         sapply(1:nm, function(m) {
           sapply(y_like, function(y) {
-            pred <- CN_ymafr[y, m, , f, r]
             like_comp(obs = (Cobs_ymfr[y, m, f, r] > 1e-8) * CAAobs_ymafr[y, m, , f, r],
-                      pred = pred, type = Dfishery@fcomp_like,
-                      N = Dfishery@CAAN_ymfr[y, m, f, r], theta = Dfishery@CAAtheta_f[f],
-                      stdev = sqrt(sum(pred)/pred))
+                      pred = CN_ymafr[y, m, , f, r], type = Dfishery@fcomp_like,
+                      N = Dfishery@CAAN_ymfr[y, m, f, r], theta = Dfishery@CAAtheta_f[f])
           })
         })
       })
@@ -633,7 +658,8 @@ update_report <- function(r, MSAdata) {
                 for (m in 1:nm) {
                   LAKsel_ymalfs[y, m, , , f, ] <- sapply2(1:ns, function(s) {
                     LAK_la <- t(Dstock@LAK_ymals[y, m, , , s]) * sel_lf[, b]
-                    t(LAK_la)/colSums(LAK_la)
+                    denom <- colSums(LAK_la) + 1e-8
+                    t(LAK_la)/denom
                   })
                 }
               }
@@ -642,7 +668,8 @@ update_report <- function(r, MSAdata) {
             for (m in 1:nm) {
               LAKsel_ymalfs[y_b[1], m, , , f, ] <- sapply2(1:ns, function(s) {
                 LAK_la <- t(Dstock@LAK_ymals[y_b[1], m, , , s]) * sel_lf[, b]
-                t(LAK_la)/colSums(LAK_la)
+                denom <- colSums(LAK_la) + 1e-8
+                t(LAK_la)/denom
               })
             }
             fsel_ind <- fsel1_ind <- as.matrix(expand.grid(y = y_b[-1], m = 1:m, a = 1:na, 1:nl, f = f, s = 1:ns))
@@ -658,26 +685,41 @@ update_report <- function(r, MSAdata) {
 
   if (any_CAL) {
     CN_ymalfrs <- array(NA_real_, c(ny, nm, na, nl, nf, nr, ns))
-    ind_ymalfrs <- expand.grid(y = 1:ny, m = 1:nm, a = 1:na, l = 1:nl, f = 1:nf, r = 1:nr, s = 1:ns) %>%
+    ind_ymalfrs <- expand.grid(y = 1:ny, m = 1:nm, a = 1:na, l = 1:nl, f = 1:nf, r = 1:nr, s = 1:ns) |>
       as.matrix()
+
     ymafrs_ymalfrs <- ind_ymalfrs[, c("y", "m", "a", "f", "r", "s")]
     ymalfs_ymalfrs <- ind_ymalfrs[, c("y", "m", "a", "l", "f", "s")]
     CN_ymalfrs[ind_ymalfrs] <- CN_ymafrs[ymafrs_ymalfrs] * LAKsel_ymalfs[ymalfs_ymalfrs]
-    CN_ymlfrs[] <- apply(CN_ymalfrs, c(1, 2, 4:7), sum)
-    CN_ymlfr <- apply(CN_ymalfrs, c(1, 2, 4:6), sum)
+
+    CN_ymlfrs <- array(0, c(ny, nm, nl, nf, nr, ns))
+    for (a in 1:na) {
+      ind_ymalfrs2 <- expand.grid(y = 1:ny, m = 1:nm, a = a, l = 1:nl, f = 1:nf, r = 1:nr, s = 1:ns) |>
+        as.matrix()
+      ymlfrs_ymalfrs <- ind_ymalfrs2[, c("y", "m", "l", "f", "r", "s")]
+      CN_ymlfrs[ymlfrs_ymalfrs] <- CN_ymlfrs[ymlfrs_ymalfrs] + CN_ymalfrs[ind_ymalfrs2]
+    }
+
+    CN_ymlfr <- array(0, c(ny, nm, nl, nf, nr))
+    for (s in 1:ns) {
+      ind_ymlfrs <- expand.grid(y = 1:ny, m = 1:nm, l = 1:nl, f = 1:nf, r = 1:nr, s = s) |>
+        as.matrix()
+      ymlfr_ymlfrs <- ind_ymlfrs[, c("y", "m", "l", "f", "r")]
+      CN_ymlfr[ymlfr_ymlfrs] <- CN_ymlfr[ymlfr_ymlfrs] + CN_ymlfrs[ind_ymlfrs]
+    }
 
     CALobs_ymlfr <- OBS(CALobs_ymlfr)
 
+    lambda_CAL <- array(Dfishery@lambdaCAL_f, c(nf, length(y_like), nm, nr)) |> aperm(c(2, 3, 1, 4))
+
     loglike_CAL_ymfr <- array(0, c(ny, nm, nf, nr))
-    loglike_CAL_ymfr[y_like, , , ] <- sapply2(1:nr, function(r) {
+    loglike_CAL_ymfr[y_like, , , ] <- lambda_CAL * sapply2(1:nr, function(r) {
       sapply2(1:nf, function(f) {
         sapply(1:nm, function(m) {
           sapply(y_like, function(y) {
-            pred <- CN_ymlfr[y, m, , f, r]
             like_comp(obs = (Cobs_ymfr[y, m, f, r] > 1e-8) * CALobs_ymlfr[y, m, , f, r],
-                      pred = pred, type = Dfishery@fcomp_like,
-                      N = Dfishery@CALN_ymfr[y, m, f, r], theta = Dfishery@CALtheta_f[f],
-                      stdev = sqrt(sum(pred)/pred))
+                      pred = CN_ymlfr[y, m, , f, r], type = Dfishery@fcomp_like,
+                      N = Dfishery@CALN_ymfr[y, m, f, r], theta = Dfishery@CALtheta_f[f])
           })
         })
       })
@@ -708,8 +750,11 @@ update_report <- function(r, MSAdata) {
     I_ymi[] <- sapply2(1:ni, function(i) q_i[i] * VI_ymi[, , i])
 
     Iobs_ymi <- OBS(Iobs_ymi)
+
+    lambda_I <- array(Dsurvey@lambdaI_i, c(ni, ny, nm)) |> aperm(c(2, 3, 1))
+
     loglike_I_ymi <- array(0, c(ny, nm, ni))
-    loglike_I_ymi[] <- dnorm(log(Iobs_ymi/I_ymi), 0, Dsurvey@Isd_ymi, log = TRUE)
+    loglike_I_ymi[] <- lambda_I * dnorm(log(Iobs_ymi/I_ymi), 0, Dsurvey@Isd_ymi, log = TRUE)
     loglike_I_ymi[is.na(Iobs_ymi)] <- 0
     loglike_I_ymi[1:ny > max(y_like), , ] <- 0
 
@@ -723,14 +768,14 @@ update_report <- function(r, MSAdata) {
     IN_ymai <- apply(IN_ymais, 1:4, sum)
     IAAobs_ymai <- OBS(IAAobs_ymai)
 
+    lambda_IAA <- array(Dsurvey@lambdaIAA_i, c(ni, length(y_like), nm)) |> aperm(c(2, 3, 1))
+
     loglike_IAA_ymi <- array(0, c(ny, nm, ni))
-    loglike_IAA_ymi[y_like, , ] <- sapply2(1:ni, function(i) {
+    loglike_IAA_ymi[y_like, , ] <- lambda_IAA * sapply2(1:ni, function(i) {
       sapply(1:nm, function(m) {
         sapply(y_like, function(y) {
-          pred <- IN_ymai[y, m, , i]
-          like_comp(obs = IAAobs_ymai[y, m, , i], pred = pred, type = Dsurvey@icomp_like,
-                    N = Dsurvey@IAAN_ymi[y, m, i], theta = Dsurvey@IAAtheta_i[i],
-                    stdev = sqrt(sum(pred)/pred))
+          like_comp(obs = IAAobs_ymai[y, m, , i], pred = IN_ymai[y, m, , i], type = Dsurvey@icomp_like,
+                    N = Dsurvey@IAAN_ymi[y, m, i], theta = Dsurvey@IAAtheta_i[i])
         })
       })
     })
@@ -750,7 +795,8 @@ update_report <- function(r, MSAdata) {
               for (m in 1:nm) {
                 LAKsel_ymalis[y, m, , , i, ] <- sapply2(1:ns, function(s) {
                   LAK_la <- t(Dstock@LAK_ymals[y, m, , , s]) * sel_li[, i]
-                  t(LAK_la)/colSums(LAK_la)
+                  denom <- colSums(LAK_la) + 1e-8
+                  t(LAK_la)/denom
                 })
               }
             }
@@ -758,9 +804,11 @@ update_report <- function(r, MSAdata) {
             for (m in 1:nm) {
               LAKsel_ymalis[1, m, , , i, ] <- sapply2(1:ns, function(s) {
                 LAK_la <- t(Dstock@LAK_ymals[1, m, , , s]) * sel_li[, i]
-                t(LAK_la)/colSums(LAK_la)
+                denom <- colSums(LAK_la) + 1e-8
+                t(LAK_la)/denom
               })
             }
+
             isel_ind <- isel1_ind <- as.matrix(expand.grid(y = 2:ny, m = 1:m, a = 1:na, 1:nl, i = i, s = 1:ns))
             isel1_ind[, "y"] <- 1
             LAKsel_ymalis[isel_ind] <- LAKsel_ymalis[isel1_ind]
@@ -774,7 +822,7 @@ update_report <- function(r, MSAdata) {
     }
 
     IN_ymalis <- array(NA_real_, c(ny, nm, na, nl, ni, ns))
-    ind_ymalis <- expand.grid(y = 1:ny, m = 1:nm, a = 1:na, l = 1:nl, i = 1:ni, s = 1:ns) %>%
+    ind_ymalis <- expand.grid(y = 1:ny, m = 1:nm, a = 1:na, l = 1:nl, i = 1:ni, s = 1:ns) |>
       as.matrix()
     ymais_ymalis <- ind_ymalis[, c("y", "m", "a", "i", "s")]
     IN_ymalis[] <- IN_ymais[ymais_ymalis] * LAKsel_ymalis
@@ -783,14 +831,14 @@ update_report <- function(r, MSAdata) {
 
     IALobs_ymli <- OBS(IALobs_ymli)
 
+    lambda_IAL <- array(Dsurvey@lambdaIAL_i, c(ni, length(y_like), nm)) |> aperm(c(2, 3, 1))
+
     loglike_IAL_ymi <- array(0, c(ny, nm, ni))
-    loglike_IAL_ymi[y_like, , ] <- sapply2(1:ni, function(i) {
+    loglike_IAL_ymi[y_like, , ] <- lambda_IAL * sapply2(1:ni, function(i) {
       sapply(1:nm, function(m) {
         sapply(y_like, function(y) {
-          pred <- IN_ymli[y, m, , i]
-          like_comp(obs = IALobs_ymli[y, m, , i], pred = pred, type = Dsurvey@icomp_like,
-                    N = Dsurvey@IALN_ymi[y, m, i], theta = Dsurvey@IALtheta_i[i],
-                    stdev = sqrt(sum(pred)/pred))
+          like_comp(obs = IALobs_ymli[y, m, , i], pred = IN_ymli[y, m, , i], type = Dsurvey@icomp_like,
+                    N = Dsurvey@IALN_ymi[y, m, i], theta = Dsurvey@IALtheta_i[i])
         })
       })
     })
@@ -804,24 +852,26 @@ update_report <- function(r, MSAdata) {
   if (any_SC) {
     SC_ymafrs <- OBS(SC_ymafrs)
     SCpred_ymafrs <- sapply2(1:nrow(Dfishery@SC_ff), function(ff) {
-      fvec <- Dfishery@SC_ff[ff, ]
+      fvec <- as.logical(Dfishery@SC_ff[ff, ])
       sapply2(1:nrow(Dfishery@SC_aa), function(aa) {
-        avec <- Dfishery@SC_aa[aa, ]
+        avec <- as.logical(Dfishery@SC_aa[aa, ])
         apply(CN_ymafrs[, , avec, fvec, , , drop = FALSE], c(1, 2, 5, 6), sum)
       })
-    }) %>%
+    }) |>
       aperm(c(1, 2, 5, 6, 3, 4))
 
+    lambda_SC <- array(Dfishery@lambdaSC_f, c(nrow(Dfishery@SC_ff), length(y_like), nm, nrow(Dfishery@SC_aa), nr)) |>
+      aperm(c(2, 3, 4, 1, 5))
+
     loglike_SC_ymafr <- array(0, dim(SC_ymafrs)[1:5])
-    loglike_SC_ymafr[y_like, , , , ] <- sapply2(1:nr, function(r) {
+    loglike_SC_ymafr[y_like, , , , ] <- lambda_SC * sapply2(1:nr, function(r) {
       sapply2(1:nrow(Dfishery@SC_ff), function(ff) {
         sapply2(1:nrow(Dfishery@SC_aa), function(aa) {
           sapply(1:nm, function(m) {
             sapply(y_like, function(y) {
-              pred <- SCpred_ymafrs[y, m, aa, ff, r, ]
               Cobs <- sum(Cobs_ymfr[y, m, ff, r])
               like_comp(obs = (Cobs > 1e-8) * SC_ymafrs[y, m, aa, ff, r, ],
-                        pred = pred, type = Dfishery@SC_like,
+                        pred = SCpred_ymafrs[y, m, aa, ff, r, ], type = Dfishery@SC_like,
                         N = Dfishery@SCN_ymafr[y, m, aa, ff, r], theta = Dfishery@SCtheta_f[ff],
                         stdev = Dfishery@SCstdev_ymafrs[y, m, aa, ff, r, ])
             })
@@ -889,21 +939,23 @@ update_report <- function(r, MSAdata) {
           mov_ymarrs[y1, m, a1, , , ] # rrsyma
         })
       })
-    }) %>%
+    }) |>
       aperm(c(4:6, 1:3))
 
     loglike_tag_mov_ymars <- sapply2(1:ns, function(s) { # Likelihood of where the fish are going
-      sapply2(1:nr, function(rf) {
+      Dtag@lambdaTag_s[s] * sapply2(1:nr, function(rf) {
         sapply2(1:nrow(Dtag@tag_aa), function(aa) {
           sapply(1:nm, function(m) {
             sapply(1:nrow(Dtag@tag_yy), function(yy) {
-              val <- 0
-              if (any(Dtag@tag_yy[yy, ] %in% y_like)) {
-                pred <- tagpred_ymarrs[yy, m, aa, rf, , s]
+              if (any(c(1:ny)[as.logical(Dtag@tag_yy[yy, ])] %in% y_like)) {
                 val <- like_comp(obs = tag_ymarrs[yy, m, aa, rf, , s],
-                                 pred = pred, type = Dtag@tag_like,
+                                 pred = tagpred_ymarrs[yy, m, aa, rf, , s], type = Dtag@tag_like,
                                  N = Dtag@tagN_ymars[yy, m, aa, rf, s], theta = Dtag@tagtheta_s[s],
                                  stdev = Dtag@tagstdev_s[s])
+              } else if (inherits(tagpred_ymarrs, "advector")) {
+                val <- advector(0)
+              } else {
+                val <- 0
               }
               return(val)
             })
@@ -918,18 +970,22 @@ update_report <- function(r, MSAdata) {
   tag_ymars <- Dtag@tag_ymars
   if (any(tag_ymars > 0, na.rm = TRUE)) {
     tag_ymars <- OBS(tag_ymars)
+
     loglike_tag_dist_ymas <- sapply2(1:ns, function(s) { # Likelihood of where the fish are present
-      sapply2(1:nrow(Dtag@tag_aa), function(aa) {
-        avec <- Dtag@tag_aa[aa, ]
+      Dtag@lambdaTag_s[s] * sapply2(1:nrow(Dtag@tag_aa), function(aa) {
+        avec <- as.logical(Dtag@tag_aa[aa, ])
         sapply(1:nm, function(m) {
           sapply(1:nrow(Dtag@tag_yy), function(yy) {
-            val <- 0
-            if (any(Dtag@tag_yy[yy, ] %in% y_like)) {
-              pred <- apply(N_ymars[yvec, m, avec, , s, drop = FALSE], 3, sum)
-              like_comp(obs = tag_ymars[yy, m, aa, , s],
-                        pred = pred, type = Dtag@tag_like,
-                        N = Dtag@tagN_ymas[yy, m, aa, s], theta = Dtag@tagtheta_s[s],
-                        stdev = Dtag@tagstdev_s[s])
+            pred <- apply(N_ymars[yvec, m, avec, , s, drop = FALSE], 3, sum)
+            if (any(c(1:ny)[as.logical(Dtag@tag_yy[yy, ])] %in% y_like)) {
+              val <- like_comp(obs = tag_ymars[yy, m, aa, , s],
+                               pred = pred, type = Dtag@tag_like,
+                               N = Dtag@tagN_ymas[yy, m, aa, s], theta = Dtag@tagtheta_s[s],
+                               stdev = Dtag@tagstdev_s[s])
+            } else if (inherits(pred, "advector")) {
+              val <- advector(0)
+            } else {
+              val <- 0
             }
             return(val)
           })

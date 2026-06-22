@@ -51,7 +51,8 @@ setClass(
             fcomp_like = "character", CAAN_ymfr = "array", CALN_ymfr = "array", CAAtheta_f = "numeric", CALtheta_f = "numeric",
             sel_block_yf = "array", sel_f = "character", Cinit_mfr = "array",
             SC_ymafrs = "array", SC_aa = "matrix", SC_ff = "matrix",
-            SC_like = "character", SCN_ymafr = "array", SCtheta_f = "numeric", SCstdev_ymafrs = "array")
+            SC_like = "character", SCN_ymafr = "array", SCtheta_f = "numeric", SCstdev_ymafrs = "array",
+            lambdaCobs_f = "numeric", lambdaCAA_f = "numeric", lambdaCAL_f = "numeric", lambdaSC_f = "numeric")
 )
 
 #' Dsurvey S4 object
@@ -63,7 +64,8 @@ setClass(
   slots = c(ni = "numeric", Iobs_ymi = "array", Isd_ymi = "array", unit_i = "character",
             IAAobs_ymai = "array", IALobs_ymli = "array",
             icomp_like = "character", IAAN_ymi = "array", IALN_ymi = "array", IAAtheta_i = "numeric", IALtheta_i = "numeric",
-            samp_irs = "array", sel_i = "vector", delta_i = "numeric")
+            samp_irs = "array", sel_i = "vector", delta_i = "numeric",
+            lambdaI_i = "numeric", lambdaIAA_i = "numeric", lambdaIAL_i = "numeric")
 )
 
 #' DCKMR S4 object
@@ -83,7 +85,8 @@ setClass(
 setClass(
   "Dtag",
   slots = c(tag_ymarrs = "array", tag_ymars = "array", tag_yy = "matrix", tag_aa = "matrix", tag_like = "character",
-            tagN_ymars = "vector", tagN_ymas = "vector", tagtheta_s = "vector", tagstdev_s = "vector")
+            tagN_ymars = "array", tagN_ymas = "array", tagtheta_s = "numeric", tagstdev_s = "numeric",
+            lambdaTag_s = "numeric")
 )
 
 #' Dlabel S4 object
@@ -196,7 +199,7 @@ setGeneric("report", function(object, ...) standardGeneric("report"))
 setMethod("report", signature(object = "MSAassess"),
           function(object, name, filename = "MSA", dir = tempdir(), open_file = TRUE, render_args = list(), ...) {
 
-            if (missing(name)) name <- substitute(object) %>% as.character()
+            if (missing(name)) name <- substitute(object) |> as.character()
 
             dots <- list(...)
             x <- object # Needed for markdown file
@@ -213,7 +216,7 @@ setMethod("report", signature(object = "MSAassess"),
             sname <- dat@Dlabel@stock
             if (!length(sname)) sname <- "Stock 1"
 
-            rmd <- system.file("include", "MSAreport.Rmd", package = "multiSA") %>% readLines()
+            rmd <- system.file("include", "MSAreport.Rmd", package = "multiSA") |> readLines()
             rmd_split <- split(rmd, 1:length(rmd))
 
             name_ind <- grep("NAME", rmd)
@@ -236,14 +239,14 @@ setMethod("report", signature(object = "MSAassess"),
             nf <- dat@Dfishery@nf
             fishery_ind <- grep("*ADD FISHERY RMD*", rmd)
             rmd_split[[fishery_ind]] <- mapply(make_rmd_fishery, f = 1:nf, fname = fname,
-                                               MoreArgs = list(nm = nm, rname = rname)) %>%
+                                               MoreArgs = list(nm = nm, rname = rname)) |>
               as.character()
 
             ni <- dat@Dsurvey@ni
             iname <- dat@Dlabel@index
             survey_ind <- grep("*ADD SURVEY RMD*", rmd)
             if (ni > 0) {
-              rmd_split[[survey_ind]] <- mapply(make_rmd_survey, i = 1:ni, iname = iname) %>%
+              rmd_split[[survey_ind]] <- mapply(make_rmd_survey, i = 1:ni, iname = iname) |>
                 as.character()
             } else {
               rmd_split[[survey_ind]] <- ""
@@ -263,14 +266,14 @@ setMethod("report", signature(object = "MSAassess"),
                         fname <- ifelse(nrow(dat@Dfishery@SC_ff) != ncol(dat@Dfishery@SC_ff), "aggregate fleet", "fleet")
                         aname <- ifelse(nrow(dat@Dfishery@SC_aa) != ncol(dat@Dfishery@SC_aa), "age class", "age")
                         make_rmd_SC(ff, aa, r, paste(fname, ff), paste(aname, aa), rname[r])
-                      }) %>% unlist()
+                      }) |> unlist()
                     })
                     do.call(c, out)
                   } else {
                     ""
                   }
-                }) %>%
-                  unlist() %>%
+                }) |>
+                  unlist() |>
                   as.character()
 
                 c("## Stock composition {.tabset}\n\n", sc_txt)
@@ -293,11 +296,11 @@ setMethod("report", signature(object = "MSAassess"),
                       yname <- ifelse(nrow(dat@Dtag@tag_yy) != ncol(dat@Dtag@tag_yy), "aggregate year", "year")
                       aname <- ifelse(nrow(dat@Dtag@tag_aa) != ncol(dat@Dtag@tag_aa), "age class", "age")
                       make_rmd_tagmov(yy, aa, s, paste(yname, yy), paste(aname, aa), sname[s], header = yy == 1 && aa == 1)
-                    }) %>% unlist()
+                    }) |> unlist()
                   })
                   do.call(c, out)
-                }) %>%
-                  unlist() %>%
+                }) |>
+                  unlist() |>
                   as.character()
 
                 c("## Tag movement {.tabset}\n\n", tagmov_txt)
@@ -308,14 +311,14 @@ setMethod("report", signature(object = "MSAassess"),
             }
 
             summarystock_ind <- grep("*ADD IND STOCK RMD*", rmd)
-            rmd_split[[summarystock_ind]] <- mapply(make_rmd_ind_stock, s = 1:ns, sname = sname, MoreArgs = list(ns = ns)) %>%
+            rmd_split[[summarystock_ind]] <- mapply(make_rmd_ind_stock, s = 1:ns, sname = sname, MoreArgs = list(ns = ns)) |>
               as.character()
 
             stock_ind <- grep("*ADD STOCK REGION RMD*", rmd)
             mov_ind <- grep("*ADD MOVEMENT RMD*", rmd)
             if (nr > 1) {
               year <- dat@Dlabel@year
-              rmd_split[[stock_ind]] <- mapply(make_rmd_stock_region, s = 1:ns, sname = sname, MoreArgs = list(ns = ns)) %>%
+              rmd_split[[stock_ind]] <- mapply(make_rmd_stock_region, s = 1:ns, sname = sname, MoreArgs = list(ns = ns)) |>
                 as.character()
 
               if (is.null(dots$ymov)) dots$ymov <- dat@Dmodel@ny
@@ -325,7 +328,7 @@ setMethod("report", signature(object = "MSAassess"),
               rmd_split[[mov_ind]] <- sapply(1:nrow(mov), function(i) {
                 make_rmd_mov(s = mov$s[i], y = mov$y[i], a = mov$a[i], yname = dat@Dlabel@year[mov$y[i]],
                              sname = sname[mov$s[i]], header = i == 1)
-              }) %>% as.character()
+              }) |> as.character()
 
             } else {
               rmd_split[[stock_ind]] <- rmd_split[[mov_ind]] <- ""
