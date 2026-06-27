@@ -1,6 +1,6 @@
-76933bf7a00b753fa85c0666cff25962 *DESCRIPTION
+9933227bf4728cdcaf74387c97f5c019 *DESCRIPTION
 6d7b5465b8c9a2e7211f78c730947332 *NAMESPACE
-321f21c9a249814c2649d3598c1b6ad5 *NEWS.md
+e0c770ce718823fcade1561f7a6c68fa *NEWS.md
 dc1b36c433730710e122cf5239a5a885 *R/calc_population.R
 39b5107dc8fb029706e47f3f6dcfeb45 *R/check-data.R
 9d99ad4109a2cd6aca770b73f29400b9 *R/define-s4-class.R
@@ -10,7 +10,7 @@ bc1bc9c4efea46af4eb417ccc27cbece *R/like.R
 0c1e1d15376a15d88c7e61bd3f5c55ae *R/make-parameters.R
 b9e30eb5193cbc1ee3ca51bc3caa2e90 *R/misc.R
 df25f373c377fa0a4f0fb1f8b0425d1f *R/model.R
-18274f7aa257ef9635732e66ffbe7884 *R/model_int.R
+21fe0b0e92889522f26763e9cd93abc1 *R/model_int.R
 1b54137d4ae82b40a266122de6d1201b *R/multiSA-package.R
 3666cca544069f9acbceb0a9dab83fb8 *R/plot.R
 54467d2e3f43e48050d20992b306bbb1 *R/prior.R

@@ -1,6 +1,6 @@
 Package: multiSA
 Title: Multi-Stock Assessment
-Version: 0.3.0
+Version: 0.4.0
 Authors@R: 
     person("Quang", "Huynh", , "quang@bluematterscience.com", role = c("aut", "cre"),
            comment = c(ORCID = "0000-0001-7835-4376"))
@@ -22,7 +22,7 @@ URL: https://blue-matter.github.io/multiSA/,
         https://github.com/Blue-Matter/multiSA
 BugReports: https://github.com/Blue-Matter/multiSA/issues
 NeedsCompilation: no
-Packaged: 2026-06-22 19:56:45 UTC; quang
+Packaged: 2026-06-25 17:10:07 UTC; quang
 Author: Quang Huynh [aut, cre] (ORCID: <https://orcid.org/0000-0001-7835-4376>)
 Repository: CRAN
-Date/Publication: 2026-06-22 20:50:02 UTC
+Date/Publication: 2026-06-27 14:20:02 UTC
