@@ -107,6 +107,7 @@ check_Dmodel <- function(Dmodel, Dstock, nf, silent = FALSE) {
     Dmodel@condition <- "F"
     if (!silent) message("Setting ", ch, "@condition = F")
   }
+  Dmodel@condition <- match.arg(Dmodel@condition, choices = c("F", "catch"))
   if (Dmodel@condition == "catch" && !length(Dmodel@nitF)) {
     if (!silent) message("Setting ", ch, "@nitF to 5")
     Dmodel@nitF <- 5
@@ -139,8 +140,9 @@ check_Dmodel <- function(Dmodel, Dstock, nf, silent = FALSE) {
       stop("dim(", ch, "@pbc_rdev_ys) should be ", c(Dmodel@ny, Dmodel@ns) |> paste(collapse = ", "))
     }
   }
+
+  na_init <- ifelse(Dmodel@nm > 1 && Dstock@m_advanceage > 1, Dmodel@na, Dmodel@na-1)
   if (!length(Dmodel@pbc_initrdev_as)) {
-    na_init <- ifelse(Dstock@m_advanceage > 1, Dmodel@na, Dmodel@na-1)
     Dmodel@pbc_initrdev_as <- matrix(1, na_init, Dmodel@ns)
   } else if (length(Dmodel@pbc_initrdev_as) == 1) {
     Dmodel@pbc_initrdev_as <- matrix(Dmodel@pbc_initrdev_as, na_init, Dmodel@ns)
@@ -150,7 +152,6 @@ check_Dmodel <- function(Dmodel, Dstock, nf, silent = FALSE) {
       stop("dim(", ch, "@pbc_initrdev_as) should be ", c(na_init, Dmodel@ns) |> paste(collapse = ", "))
     }
   }
-
 
   return(Dmodel)
 }
@@ -435,7 +436,7 @@ check_Dfishery <- function(Dfishery, Dstock, Dmodel, silent = FALSE) {
       Dfishery@lambdaSC_f <- rep(1, dim_SC[4])
     } else if (length(Dfishery@lambdaSC_f) == 1) {
       Dfishery@lambdaSC_f <- rep(Dfishery@lambdaSC_f, dim_SC[4])
-    } else {
+    } else if (length(Dfishery@lambdaSC_f) != dim_SC[4]) {
       stop("Vector ", ch, "@lambdaSC_f needs to be length ", dim_SC[4])
     }
   }
@@ -576,9 +577,16 @@ check_Dsurvey <- function(Dsurvey, Dmodel, silent = FALSE) {
       Dsurvey@delta_i <- rep(0, ni)
     } else if (length(Dsurvey@delta_i) == 1) {
       Dsurvey@delta_i <- rep(Dsurvey@delta_i, ni)
-    } else if(length(Dsurvey@delta_i) != ni) {
+    } else if (length(Dsurvey@delta_i) != ni) {
       stop("Vector ", ch, "@delta_i needs to be length ", ni)
     }
+
+    if (!length(Dsurvey@qest_i)) {
+      Dsurvey@qest_i <- rep("est", ni)
+    } else if (length(Dsurvey@qest_i) != ni) {
+      stop("Vector ", ch, "@qest_i needs to be length ", ni)
+    }
+
   }
 
   return(Dsurvey)
@@ -668,7 +676,7 @@ check_Dtag <- function(Dtag, Dmodel, silent = FALSE) {
       Dtag@lambdaTag_s <- rep(1, ns)
     } else if (length(Dtag@lambdaTag_s) == 1) {
       Dtag@lambdaTag_s <- rep(Dtag@lambdaTag_s, ns)
-    } else {
+    } else if (length(Dtag@lambdaTag_s != ns)) {
       stop("Vector ", ch, "@lambdaTag_s needs to be length ", ns)
     }
   } else { # Sets up movement estimation

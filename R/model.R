@@ -308,7 +308,7 @@ update_report <- function(r, MSAdata) {
 
     # Check for time-varying sel due to tv maturity
     tv_mat <- any(sapply(2:ny, function(y) max(mat_yas[y, , s] - mat_yas[1, , s])) > 0)
-    tv_fsel_mat <- tv_mat && any(Dfishery@sel_f == "SB")
+    tv_fsel_mat <- tv_mat && any(Dfishery@sel_f %in% c("SB", "mature"))
 
     # Slower method by individual time step for now if tv growth or maturity
     if (tv_flensel_growth || tv_fsel_mat) {
@@ -345,7 +345,7 @@ update_report <- function(r, MSAdata) {
     if (ni > 0) {
       ilensel <- any(sapply(1:ni, function(i) grepl("length", Dsurvey@sel_i[i])))
       tv_iagesel_growth <- ilensel && tv_growth
-      tv_isel_mat <- tv_mat && any(Dsurvey@sel_i == "SB")
+      tv_isel_mat <- tv_mat && any(Dsurvey@sel_i %in% c("SB", "mature"))
       if (tv_iagesel_growth || tv_isel_mat) {
         for (y in 1:ny) {
           for (m in 1:nm) {
@@ -746,7 +746,14 @@ update_report <- function(r, MSAdata) {
         })
       }
     }
-    q_i <- sapply(1:ni, function(i) calc_q(Iobs_ymi[, , i], B = VI_ymi[, , i]))
+    q_i <- sapply(1:ni, function(i) {
+      q_fixed <- suppressWarnings(as.numeric(Dsurvey@qest_i[i]))
+      if (!is.na(q_fixed)) {
+        AD(q_fixed)
+      } else {
+        calc_q(Iobs_ymi[, , i], B = VI_ymi[, , i])
+      }
+    })
     I_ymi[] <- sapply2(1:ni, function(i) q_i[i] * VI_ymi[, , i])
 
     Iobs_ymi <- OBS(Iobs_ymi)
@@ -869,7 +876,8 @@ update_report <- function(r, MSAdata) {
         sapply2(1:nrow(Dfishery@SC_aa), function(aa) {
           sapply(1:nm, function(m) {
             sapply(y_like, function(y) {
-              Cobs <- sum(Cobs_ymfr[y, m, ff, r])
+              fvec <- as.logical(Dfishery@SC_ff[ff, ])
+              Cobs <- sum(Cobs_ymfr[y, m, fvec, r])
               like_comp(obs = (Cobs > 1e-8) * SC_ymafrs[y, m, aa, ff, r, ],
                         pred = SCpred_ymafrs[y, m, aa, ff, r, ], type = Dfishery@SC_like,
                         N = Dfishery@SCN_ymafr[y, m, aa, ff, r], theta = Dfishery@SCtheta_f[ff],

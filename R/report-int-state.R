@@ -355,11 +355,10 @@ plot_Rdev <- function(fit, s = 1, log = TRUE, figure = TRUE) {
       std <- numeric(length(x))
     }
 
+    upper <- x + 1.96 * std
+    lower <- x - 1.96 * std
 
     if (figure) {
-      upper <- x + 1.96 * std
-      lower <- x - 1.96 * std
-
       plot(year, x, xlab = "Year", ylab = "log Recruitment deviations", type = "o", pch = 16,
            ylim = range(lower, upper), lty = 3)
       arrows(x0 = year, y0 = lower, y1 = upper, length = 0)
@@ -380,6 +379,11 @@ plot_Rdev <- function(fit, s = 1, log = TRUE, figure = TRUE) {
     dev = x,
     stock = Dlabel@stock[s]
   )
+
+  if (log) {
+    output$lwr <- lower
+    output$upr <- upper
+  }
   invisible(output)
 }
 
@@ -571,7 +575,7 @@ plot_seli <- function(fit, i = 1, figure = TRUE) {
     output$name <- iname
   } else {
 
-    age_sel <- grepl("age", sel_i) || sel_i %in% c("B", "SB")
+    age_sel <- grepl("age", sel_i) || sel_i %in% c("B", "SB", "total", "mature")
     len_sel <- grepl("length", sel_i) || all(!is.na(fit@report$sel_li[, i]))
 
     if (!age_sel && len_sel) {
